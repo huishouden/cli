@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.0](https://github.com/huishouden/cli/compare/v1.1.1...v1.2.0) (2026-10-05)
+
+### Features
+
+* **ops:** staging-cleanup replaces the staging-sweep schedule; screenshot sizes a scene wasn't written for are reported, not failed ([bc8c40f](https://github.com/huishouden/cli/commit/bc8c40fa15be0d815cbeefab60951c15f757283b))
+
+### Documentation
+
+* install with bun add -g; bunx needs an exact tag (#3) ([0d87206](https://github.com/huishouden/cli/commit/0d87206d3f74eb038b0660b8514b6442a2603714))
+
 ## [1.1.1](https://github.com/huishouden/cli/compare/v1.1.0...v1.1.1) (2026-10-05)
 
 ### Bug Fixes
