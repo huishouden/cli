@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* **dev:** firebase-tools 15.32.1 for emulators and deploys; a Java 21+ found for the emulators ([66eb3a1](https://github.com/huishouden/cli/commit/66eb3a1fc0b16b976a846576d104fc399a925707))
 * logout names a keychain it could not clear; Health appointments in the emulator's privacy checks ([945567f](https://github.com/huishouden/cli/commit/945567f68f4503d6a4082abbccc4e14f5dfd46f4))
 * an unreachable keychain doesn't hide a sign-in the file holds; old sign-ins say so ([b24e6db](https://github.com/huishouden/cli/commit/b24e6db2611356a5d214842db08a42d478329a59))
 * unreadable sign-ins say which way; keychains tell absent from locked ([9654a06](https://github.com/huishouden/cli/commit/9654a068f0948368105b4c1d5113cdab15448bca))
