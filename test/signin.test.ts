@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLI_TOKEN_PATH, isLoopbackRedirect, storeCliHandoff, takeCliHandoff, type HandoffStore } from '@huishouden/pwa-kit/signin-handoff';
-import { CredentialUnreadable, encryptedFile, keychainStore, libsecretStore, readCredential, saveCredential, securityAddCommand, type CredentialStore } from '../src/lib/credentials';
+import { CredentialUnreadable, deleteCredential, encryptedFile, keychainStore, libsecretStore, readCredential, saveCredential, securityAddCommand, type CredentialStore } from '../src/lib/credentials';
 import { loadSignIn, loopbackLogin, storeSignIn, type Credential, type Site } from '../src/lib/signin';
 
 // hh login against a stand-in connector that runs the kit's own hand-off (storeCliHandoff,
@@ -206,8 +206,20 @@ describe('the OS keychains, with a stand-in runner', () => {
     expect(r.calls[0]).toEqual({ cmd: ['secret-tool', 'store', '--label=Huishouden hh', 'service', 'huishouden-hh', 'account', 'staging'], input: secret });
     expect(store.read('staging')).toBe(secret);
     expect(store.delete('staging')).toBe(true);
+    expect(libsecretStore((() => ({ code: 1, stdout: '', stderr: '' })) as never).delete('staging')).toBe(false);
+    expect(() => libsecretStore((() => ({ code: 1, stdout: '', stderr: 'Cannot autolaunch D-Bus' })) as never).delete('staging')).toThrow(CredentialUnreadable);
     expect(libsecretStore((() => ({ code: 1, stdout: '', stderr: '' })) as never).read('staging')).toBeNull();
     expect(() => libsecretStore((() => ({ code: 1, stdout: '', stderr: 'Cannot autolaunch D-Bus' })) as never).read('staging')).toThrow('could not be read');
+  });
+
+  test('logout names a store it could not clear, and still clears the others', () => {
+    const dir2 = mkdtempSync(join(tmpdir(), 'hh-del-'));
+    const file = encryptedFile(dir2, '');
+    file.save('staging', 'secret-value');
+    const locked = keychainStore((() => ({ code: 36, stdout: '', stderr: 'locked' })) as never);
+    expect(deleteCredential('staging', [locked, file])).toEqual({ removed: ['encrypted file'], failed: ['macOS Keychain'] });
+    expect(keychainStore((() => ({ code: 44, stdout: '', stderr: '' })) as never).delete('staging')).toBe(false);
+    rmSync(dir2, { recursive: true, force: true });
   });
 
   test('macOS: only "not found" (44) is absent; a locked or refused keychain says so', () => {

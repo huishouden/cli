@@ -15,7 +15,7 @@ export interface CredentialStore {
   save(account: string, secret: string): void;
   /** The secret, or null when none is stored. Throws `CredentialUnreadable` when one is stored but can't be opened. */
   read(account: string): string | null;
-  /** Whether one was removed; never throws. */
+  /** Whether one was removed (false: there was none). Throws `CredentialUnreadable('unavailable')` when the store couldn't be changed. */
   delete(account: string): boolean;
 }
 
@@ -70,7 +70,10 @@ export function keychainStore(run: Runner = sh): CredentialStore {
       throw new CredentialUnreadable('unavailable', 'macOS Keychain');
     },
     delete(account) {
-      return run(['security', 'delete-generic-password', '-s', SERVICE, '-a', account]).code === 0;
+      const r = run(['security', 'delete-generic-password', '-s', SERVICE, '-a', account]);
+      if (r.code === 0) return true;
+      if (r.code === 44) return false;
+      throw new CredentialUnreadable('unavailable', 'macOS Keychain');
     },
   };
 }
@@ -90,7 +93,12 @@ export function libsecretStore(run: Runner = sh): CredentialStore {
       throw new CredentialUnreadable('unavailable', 'libsecret keyring');
     },
     delete(account) {
-      return run(['secret-tool', 'clear', 'service', SERVICE, 'account', account]).code === 0;
+      // secret-tool clear exits 0 whether or not there was one: look first, so the answer is true.
+      const there = run(['secret-tool', 'lookup', 'service', SERVICE, 'account', account]);
+      if (there.code !== 0 && there.stderr.trim()) throw new CredentialUnreadable('unavailable', 'libsecret keyring');
+      if (there.code !== 0) return false;
+      if (run(['secret-tool', 'clear', 'service', SERVICE, 'account', account]).code !== 0) throw new CredentialUnreadable('unavailable', 'libsecret keyring');
+      return true;
     },
   };
 }
@@ -192,8 +200,13 @@ export function saveCredential(account: string, secret: string, stores = credent
       lastError = e;
       continue;
     }
-    // Only one copy: a stale one elsewhere would be read after a later logout. Best effort.
-    for (const other of stores) if (other !== store) other.delete(account);
+    // Only one copy: a stale one elsewhere would be read after a later logout. Best effort here;
+    // logout reports a store it couldn't clear.
+    for (const other of stores)
+      if (other !== store)
+        try {
+          other.delete(account);
+        } catch {}
     return { store, ...(store.warning ? { warning: store.warning } : {}) };
   }
   throw lastError instanceof Error ? lastError : new Error('could not store the sign-in');
@@ -221,6 +234,16 @@ export function readCredential(account: string, stores = credentialStores()): { 
   return null;
 }
 
-export function deleteCredential(account: string, stores = credentialStores()): string[] {
-  return stores.filter((s) => s.delete(account)).map((s) => s.name);
+/** Removes the sign-in from every store: which held one, and which couldn't be changed. */
+export function deleteCredential(account: string, stores = credentialStores()): { removed: string[]; failed: string[] } {
+  const removed: string[] = [];
+  const failed: string[] = [];
+  for (const s of stores) {
+    try {
+      if (s.delete(account)) removed.push(s.name);
+    } catch {
+      failed.push(s.name);
+    }
+  }
+  return { removed, failed };
 }

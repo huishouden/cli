@@ -61,10 +61,16 @@ register({
   usage: 'hh logout [--staging] [--json]',
   async run(ctx) {
     const site = siteFor(ctx.flags);
-    const removed = forgetSignIn(site.name);
+    const { removed, failed } = forgetSignIn(site.name);
     // Firebase has no call that ends one refresh token from outside the project's admin, so the
     // sign-in hh held is forgotten here; it ends everywhere when the account is disabled or deleted.
     const note = 'Firebase cannot revoke a single sign-in from a client, so it is removed from this computer only.';
+    if (failed.length)
+      return {
+        ok: false,
+        data: { site: site.name, removed, failed, revoked: false, note },
+        text: `Not fully signed out of ${site.name}: the ${failed.join(' and the ')} could not be changed (locked, or access was refused) and may still hold the sign-in. Unlock it and run hh logout again.`,
+      };
     return {
       ok: true,
       data: { site: site.name, removed, revoked: false, note },
