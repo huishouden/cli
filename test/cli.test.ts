@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { parseArgs } from '../src/registry';
 import { bump, changelogSection, hasSection, insertSection, levelFor, parseCommit } from '../src/lib/semver';
 import { markerLine, parseMarker } from '../src/lib/evidence';
-import { isProduction, screenshotCommand } from '../src/lib/screenshots';
+import { classify, isProduction, screenshotCommand } from '../src/lib/screenshots';
 import { chooseMode } from '../src/commands/dev/evidence';
 import { openBlocking, parseRollup } from '../src/commands/dev/review';
 import { fixProfile, profileDrift } from '../src/commands/ops/profile-check';
@@ -113,4 +113,11 @@ test('open Blocking/Major: resolved threads close a finding, body-only findings 
     { id: '3', path: 'c.ts', line: 1, resolved: false },
   ];
   expect(openBlocking(f, threads).map((x) => x.where)).toEqual(['b.ts:4', 'CHANGELOG.md:10']);
+});
+
+test('screenshot variants: a failure is excused only by scenes another size has', () => {
+  const files = { 'phone-light': ['a.png'], 'tablet-light': ['a.png', 'b.png'] };
+  expect(classify(files, { 'phone-light': 1, 'tablet-light': 0 })).toEqual({ failed: [], missing: { 'phone-light': ['b'], 'tablet-light': [] } });
+  expect(classify(files, { 'phone-light': 0, 'tablet-light': 1 }).failed).toEqual(['tablet-light']);
+  expect(classify({ x: [], y: [] }, { x: 1, y: 1 }).failed).toEqual(['x', 'y']);
 });

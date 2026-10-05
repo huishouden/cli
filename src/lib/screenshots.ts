@@ -61,10 +61,26 @@ export interface Shots {
   dir: string;
   /** variant id → file names */
   files: Record<string, string[]>;
-  /** Variants that produced no image at all. */
+  /** Variants whose run failed for more than scenes that render at another size. */
   failed: string[];
-  /** Variants where some scenes didn't render at that size. */
-  partial: string[];
+  /** variant id → scenes it lacks that another variant has (a scene written for one size). */
+  missing: Record<string, string[]>;
+}
+
+/**
+ * A variant's failed run is excused only by the scenes it lacks that another variant took (a
+ * tablet-only panel at phone size). A failure with nothing missing is a real one: a scene that
+ * breaks at every size, or an assertion after the screenshot.
+ */
+export function classify(files: Record<string, string[]>, exitCodes: Record<string, number>): Pick<Shots, 'failed' | 'missing'> {
+  const all = [...new Set(Object.values(files).flat())];
+  const missing: Record<string, string[]> = {};
+  const failed: string[] = [];
+  for (const [id, code] of Object.entries(exitCodes)) {
+    missing[id] = all.filter((f) => !files[id]?.includes(f)).map((f) => f.replace(/\.png$/, ''));
+    if (code !== 0 && missing[id].length === 0) failed.push(id);
+  }
+  return { failed, missing };
 }
 
 export async function takeScreenshots(repo: Repo, baseUrl: string, outDir: string, json: boolean): Promise<Shots> {
@@ -76,7 +92,8 @@ export async function takeScreenshots(repo: Repo, baseUrl: string, outDir: strin
   if (!config) throw new Error('no playwright.config.ts');
   const wrapper = join(scratchDir(repo), 'playwright.variant.config.ts');
   writeFileSync(wrapper, WRAPPER(config));
-  const shots: Shots = { dir: outDir, files: {}, failed: [], partial: [] };
+  const shots: Shots = { dir: outDir, files: {}, failed: [], missing: {} };
+  const codes: Record<string, number> = {};
   for (const v of VARIANTS) {
     const dir = join(outDir, v.id);
     mkdirSync(dir, { recursive: true });
@@ -88,7 +105,7 @@ export async function takeScreenshots(repo: Repo, baseUrl: string, outDir: strin
       env: { ...env, HH_VARIANT: JSON.stringify(v), SCREENSHOT_DIR: dir, BASE_URL: baseUrl, CI: '' },
     });
     shots.files[v.id] = readdirSync(dir).filter((f) => f.endsWith('.png')).sort();
-    if (code !== 0) (shots.files[v.id].length ? shots.partial : shots.failed).push(v.id);
+    codes[v.id] = code;
   }
-  return shots;
+  return { ...shots, ...classify(shots.files, codes) };
 }
