@@ -32,16 +32,57 @@ export const installCommand = (tag: string): string[] => ['bun', 'add', '-g', ta
 
 export const removeCommand = ['bun', 'remove', '-g', '@huishouden/cli'];
 
+export type InstallOutcome =
+  | { kind: 'installed' }
+  | { kind: 'unreachable' }
+  | { kind: 'remove-failed'; code: number }
+  /** The new version failed to install and the previous one is back. */
+  | { kind: 'restored'; code: number }
+  /** The new version failed to install and the previous one could not be put back: hh is gone. */
+  | { kind: 'uninstalled'; code: number };
+
+const assetReachable = async (tag: string): Promise<boolean> => {
+  try {
+    return (await fetch(tarballUrl(tag), { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(15_000) })).ok;
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Installs `tag` over the running version. bun add -g over an installed tarball URL fails with
- * DependencyLoop, so the old entry is removed first; if the new one then fails to install, the old
- * version is put back so `hh` is never left uninstalled. Returns the exit code of the new install.
+ * DependencyLoop, so the old entry is removed first. To keep the window where hh is missing small,
+ * the release asset is checked reachable before anything is removed, and if the install then fails
+ * the previous release is put back (not possible from a source checkout, version 0.0.0).
  */
-export async function installTag(tag: string, current: string, run: (cmd: string[]) => Promise<number> = (cmd) => stream(cmd, { json: true })): Promise<number> {
-  await run(removeCommand);
+export async function installTag(
+  tag: string,
+  current: string,
+  run: (cmd: string[]) => Promise<number> = (cmd) => stream(cmd, { json: true }),
+  reachable: (tag: string) => Promise<boolean> = assetReachable,
+): Promise<InstallOutcome> {
+  if (!(await reachable(tag))) return { kind: 'unreachable' };
+  const removed = await run(removeCommand);
+  if (removed !== 0) return { kind: 'remove-failed', code: removed };
   const code = await run(installCommand(tag));
-  if (code !== 0) await run(installCommand(`v${current}`));
-  return code;
+  if (code === 0) return { kind: 'installed' };
+  const restored = current !== '0.0.0' && isExactTag(`v${current}`) && (await run(installCommand(`v${current}`))) === 0;
+  return { kind: restored ? 'restored' : 'uninstalled', code };
+}
+
+/** What to tell the person about an install that did not complete. */
+export function installFailure(o: Exclude<InstallOutcome, { kind: 'installed' }>, tag: string, current: string): string {
+  const again = `Run: ${installCommand(tag).join(' ')}`;
+  switch (o.kind) {
+    case 'unreachable':
+      return `${tag}'s tarball could not be reached; continuing on ${current}`;
+    case 'remove-failed':
+      return `could not remove the installed hh (bun remove -g exited ${o.code}); continuing on ${current}. ${again}`;
+    case 'restored':
+      return `update to ${tag} failed (bun add -g exited ${o.code}); ${current} is reinstalled. ${again}`;
+    case 'uninstalled':
+      return `update to ${tag} failed (bun add -g exited ${o.code}) and hh could not be reinstalled: hh is NOT installed. ${again}`;
+  }
 }
 
 export interface WarningOptions {

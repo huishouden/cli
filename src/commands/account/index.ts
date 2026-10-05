@@ -7,7 +7,7 @@ import { platform } from 'node:os';
 import { register } from '../../registry';
 import { forgetSignIn, loopbackLogin, NotSignedIn, signedIn, siteFor, storeSignIn } from '../../lib/signin';
 import { sh, stream } from '../../lib/sh';
-import { installCommand, installTag, isOutdated, latestReleaseTag } from '../../lib/update';
+import { installFailure, installTag, isOutdated, latestReleaseTag } from '../../lib/update';
 import pkg from '../../../package.json';
 
 register({
@@ -92,9 +92,9 @@ register({
     const tag = latestReleaseTag();
     if (!isOutdated(from, tag)) return { ok: true, data: { from, latest: tag, updated: false }, text: `hh ${from} is the latest (${tag})` };
     ctx.log(`hh ${from} → ${tag}`);
-    const code = await installTag(tag, from);
-    return code === 0
+    const outcome = await installTag(tag, from);
+    return outcome.kind === 'installed'
       ? { ok: true, data: { from, latest: tag, updated: true }, text: `hh ${from} → ${tag}` }
-      : { ok: false, data: { from, latest: tag, updated: false, error: `bun add -g exited ${code}` }, text: `Update to ${tag} failed (bun add -g exited ${code}). Run: ${installCommand(tag).join(' ')}` };
+      : { ok: false, data: { from, latest: tag, updated: false, error: outcome.kind }, text: installFailure(outcome, tag, from) };
   },
 });
