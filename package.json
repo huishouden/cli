@@ -20,7 +20,7 @@
     "typescript": "^5.9.0"
   },
   "dependencies": {
-    "@huishouden/pwa-kit": "github:huishouden/pwa-kit#v0.103.0",
+    "@huishouden/pwa-kit": "github:huishouden/pwa-kit#v0.105.0",
     "zod": "^4.6.5"
   }
 }
