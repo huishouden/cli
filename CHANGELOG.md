@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1](https://github.com/huishouden/cli/compare/v1.3.0...v1.3.1) (2026-10-05)
+
+### Bug Fixes
+
+* **runs:** household rules through gh api when raw.githubusercontent.com is unreachable ([c103b6f](https://github.com/huishouden/cli/commit/c103b6f238f2b65cf59eb509be487c1c9816703c))
+
 ## [1.3.0](https://github.com/huishouden/cli/compare/v1.2.0...v1.3.0) (2026-10-05)
 
 ### Features
