@@ -6,6 +6,10 @@
 
 * **ops:** staging-cleanup replaces the staging-sweep schedule; screenshot sizes a scene wasn't written for are reported, not failed ([bc8c40f](https://github.com/huishouden/cli/commit/bc8c40fa15be0d815cbeefab60951c15f757283b))
 
+### Bug Fixes
+
+* sweep from the kit's latest release, not the branch; screenshot failures excused only by scenes another size has; staging logic in lib ([5e7e46e](https://github.com/huishouden/cli/commit/5e7e46eb3393ad7f3872a62f5c1c09ff1ddd505d))
+
 ### Documentation
 
 * install with bun add -g; bunx needs an exact tag (#3) ([0d87206](https://github.com/huishouden/cli/commit/0d87206d3f74eb038b0660b8514b6442a2603714))
