@@ -146,6 +146,18 @@ function kitHasEmulatorPorts(repo: Repo): boolean {
   return !!v && compare(v, '0.93.0') >= 0;
 }
 
+/**
+ * huishouden/rules main's firestore.rules: from raw.githubusercontent.com, or through the GitHub API
+ * with `gh` where that host can't be reached (some networks block it).
+ */
+async function householdRules(): Promise<string> {
+  const raw = await fetch('https://raw.githubusercontent.com/huishouden/rules/main/firestore.rules').catch((e: Error) => e);
+  if (!(raw instanceof Error) && raw.ok) return raw.text();
+  const viaGh = has('gh') ? sh(['gh', 'api', '-H', 'Accept: application/vnd.github.raw', 'repos/huishouden/rules/contents/firestore.rules?ref=main']) : null;
+  if (viaGh?.code === 0 && viaGh.stdout) return viaGh.stdout;
+  throw new Error(`rules: ${raw instanceof Error ? raw.message : raw.status}${viaGh ? `; gh api: ${viaGh.stderr.trim().slice(0, 200)}` : '; gh not found'}`);
+}
+
 async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
   if (!opts.emulators || !hasScript(repo, 'e2e:emulator')) return;
   const java = useJava();
@@ -157,9 +169,7 @@ async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
   }
   const dir = scratchDir(repo, 'emulators');
   await steps.run('emulator tests (household rules from huishouden/rules main)', async () => {
-    const rules = await fetch('https://raw.githubusercontent.com/huishouden/rules/main/firestore.rules');
-    if (!rules.ok) throw new Error(`rules: ${rules.status}`);
-    writeFileSync(join(dir, 'firestore.rules'), await rules.text());
+    writeFileSync(join(dir, 'firestore.rules'), await householdRules());
     const own = kitHasEmulatorPorts(repo);
     const auth = own ? freePort() : 9099;
     const firestore = own ? freePort() : 8080;
