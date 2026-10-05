@@ -12,6 +12,8 @@ import type { Ctx } from '../src/registry';
 let dir: string;
 const realPath = process.env.PATH;
 beforeEach(() => {
+  // hh commits in the temp repos: CI has no git identity.
+  Object.assign(process.env, { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' });
   dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
 });
 afterEach(() => {
