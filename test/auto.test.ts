@@ -6,7 +6,7 @@ import { autoUpdate, isSourceCheckout, SIX_HOURS_MS } from '../src/lib/autoupdat
 import { kitOnlyDiff } from '../src/lib/carry';
 import { kitHasTarball, kitPin, kitSpec, kitSync } from '../src/lib/kitbump';
 import { repoAt } from '../src/lib/repo';
-import { defaultReviewer } from '../src/lib/review';
+import { defaultReviewer, judgeWithCarry, reviewCandidates, reviewMarkBody, type ReviewVerdict } from '../src/lib/review';
 import { readyFlow } from '../src/commands/dev/ready';
 import type { Ctx } from '../src/registry';
 
@@ -120,7 +120,7 @@ function appRepo(pin = 'github:huishouden/pwa-kit#v0.94.0', ref = 'v0.94.0', bra
   git(root, 'checkout', '-q', '-b', 'main');
   mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', dependencies: { '@huishouden/pwa-kit': pin } }, null, 2) + '\n');
-  writeFileSync(join(root, 'bun.lock'), 'lock v0.94.0\n');
+  writeFileSync(join(root, 'bun.lock'), '"@huishouden/pwa-kit": ["v0.94.0"]\nzod 4.0.0\n');
   writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), CI(ref));
   git(root, 'add', '.');
   git(root, 'commit', '-q', '-m', 'feat: app');
@@ -135,7 +135,7 @@ function appRepo(pin = 'github:huishouden/pwa-kit#v0.94.0', ref = 'v0.94.0', bra
 
 const logs: string[] = [];
 const log = (l: string) => logs.push(l);
-const fakeInstall = (root: string) => (writeFileSync(join(root, 'bun.lock'), 'lock v0.98.0\n'), true);
+const fakeInstall = (root: string) => (writeFileSync(join(root, 'bun.lock'), '"@huishouden/pwa-kit": ["v0.98.0"]\nzod 4.0.0\n'), true);
 
 test('kit sync: behind repo gets "chore: kit vX.Y.Z" on the branch, pushed, lock and workflow refs included', () => {
   const { root, origin } = appRepo();
@@ -249,12 +249,14 @@ const ctxFor = (cwd: string, flags: Ctx['flags'] = {}): Ctx => ({ args: [], flag
 const marker = (sha: string) => `<!-- hh-evidence sha=${sha} mode=local result=pass -->`;
 const reviewMark = (sha: string) => `<!-- hh-review sha=${sha} blocking=0 major=0 minor=0 run=r1 -->`;
 
+const withRoute = (routes: { match: string; stdout?: string; code?: number }[], match: string, stdout: string) => routes.map((r) => (r.match === match ? { ...r, stdout } : r));
+
 function readyRoutes(head: string, opts: { draft?: boolean } = {}) {
   return [
     { match: 'pr view', stdout: JSON.stringify({ number: 3, url: 'https://github.com/o/app/pull/3', isDraft: opts.draft ?? true, headRefOid: head, headRefName: 'feat', baseRefName: 'main', title: 't', author: { login: 'piekstra' } }) },
     { match: '/pulls/3/reviews', stdout: '' },
     { match: 'graphql', stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }) },
-    { match: 'hh-evidence', stdout: JSON.stringify([{ body: marker(head), html_url: 'https://x/c', updated_at: '2026-10-05' }]) + '\n' },
+    { match: 'hh-evidence', stdout: JSON.stringify([{ login: 'piekstra', body: marker(head), html_url: 'https://x/c', updated_at: '2026-10-05' }]) + '\n' },
     { match: 'login: .user.login, body', stdout: JSON.stringify([{ login: 'piekstra', body: reviewMark(head) }]) + '\n' },
     { match: 'pr ready', stdout: '' },
   ];
@@ -345,9 +347,7 @@ test('ready: --dry-run and --no-bump-kit leave the branch alone', async () => {
 test('ready: stale evidence for the head still blocks', async () => {
   const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
   const head = git(root, 'rev-parse', 'HEAD');
-  const routes = readyRoutes(head);
-  routes[2] = { match: 'hh-evidence', stdout: JSON.stringify([{ body: marker('f'.repeat(40)), html_url: 'u', updated_at: '1' }]) + '\n' };
-  fakeGh(routes);
+  fakeGh(withRoute(readyRoutes(head), 'hh-evidence', JSON.stringify([{ login: 'piekstra', body: marker('f'.repeat(40)), html_url: 'u', updated_at: '1' }]) + '\n'));
   const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
   expect(r.ok).toBe(false);
   expect(existsSync(join(root, 'CHANGELOG.md'))).toBe(false);
@@ -418,4 +418,69 @@ test('carry: nothing changed, or a commit that is not an ancestor, is refused', 
   const { root, base, head } = afterBump(() => {});
   expect(kitOnlyDiff(root, head, head).ok).toBe(false);
   expect(kitOnlyDiff(root, head, base).ok).toBe(false);
+});
+
+test('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock change beyond the kit are refused', () => {
+  const pkg = (r: string, f: (t: string) => string) => (writeFileSync(join(r, 'package.json'), f(readFileSync(join(r, 'package.json'), 'utf8'))), commitAll(r));
+  const wf = (r: string, f: (t: string) => string) => (writeFileSync(join(r, '.github/workflows/ci.yml'), f(readFileSync(join(r, '.github/workflows/ci.yml'), 'utf8'))), commitAll(r));
+  const cases: [string, (r: string) => void][] = [
+    ['foreign owner', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'github:someone/pwa-kit#v0.98.0'))],
+    ['other host tarball', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'https://evil.example/download/v0.98.0/x.tgz'))],
+    ['downgrade', (r) => pkg(r, (t) => t.replace(/#v0\.98\.0/, '#v0.90.0'))],
+    ['branch ref', (r) => wf(r, (t) => t.replace('pwa.yml@v0.98.0', 'pwa.yml@main'))],
+    ['lock beyond kit', (r) => (writeFileSync(join(r, 'bun.lock'), '"@huishouden/pwa-kit": ["v0.98.0"]\nzod 4.0.1 evil\n'), commitAll(r))],
+  ];
+  for (const [name, edit] of cases) {
+    dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
+    const { root, base, head } = afterBump(edit);
+    expect([name, kitOnlyDiff(root, base, head).ok]).toEqual([name, false]);
+  }
+});
+
+const V = (status: ReviewVerdict['status'], detail = status): ReviewVerdict => ({ ok: status === 'pass', status, detail });
+
+test('review carry: only when nothing reviewed the head; a failing earlier review is not skipped', () => {
+  const kitOnly = () => ({ ok: true, detail: 'kit only' });
+  // The head has its own verdict, pass or fail: no earlier one replaces it.
+  expect(judgeWithCarry('H', (s) => (s === 'H' ? V('fail') : V('pass')), ['A'], kitOnly).status).toBe('fail');
+  expect(judgeWithCarry('H', (s) => (s === 'H' ? V('pass') : V('fail')), ['A'], kitOnly).status).toBe('pass');
+  // Unreviewed head: the newest kit-equivalent candidate decides, even when it fails.
+  const byCommit: Record<string, ReviewVerdict> = { H: V('none'), B: V('fail'), A: V('pass') };
+  expect(judgeWithCarry('H', (s) => byCommit[s], ['B', 'A'], kitOnly).status).toBe('fail');
+  const carried = judgeWithCarry('H', (s) => byCommit[s], ['A'], kitOnly);
+  expect(carried).toMatchObject({ ok: true, status: 'pass' });
+  expect(carried.detail).toContain('carried from A to H: kit only');
+  // A candidate that differs by more than the kit is passed over.
+  expect(judgeWithCarry('H', (s) => byCommit[s], ['B', 'A'], (s) => ({ ok: s === 'A', detail: 'x' })).status).toBe('pass');
+  expect(judgeWithCarry('H', (s) => byCommit[s], ['A'], () => ({ ok: false, detail: 'x' })).status).toBe('none');
+});
+
+test('review candidates: reviewer reviews and trusted markers, newest first, without the head, deduplicated', () => {
+  const m = (sha: string) => reviewMarkBody({ sha, blocking: 0, major: 0, minor: 0, run: 'r' });
+  const comments = [{ login: 'piekstra', body: m('a'.repeat(40)) }, { login: 'mallory', body: m('c'.repeat(40)) }, { login: 'piekstra-dev', body: m('b'.repeat(40)) }];
+  expect(reviewCandidates(['a'.repeat(40), 'd'.repeat(40)], comments, 'piekstra-dev', 'piekstra', 'd'.repeat(40))).toEqual(['b'.repeat(40), 'a'.repeat(40)]);
+});
+
+test('ready: a failing review of the head is not replaced by an earlier clean marker', async () => {
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
+  const old = git(root, 'rev-parse', 'HEAD');
+  writeFileSync(join(root, 'bun.lock'), readFileSync(join(root, 'bun.lock'), 'utf8') + '# touched\n');
+  git(root, 'commit', '-qam', 'chore: lock');
+  git(root, 'push', '-q');
+  const head = git(root, 'rev-parse', 'HEAD');
+  fakeGh(withRoute(readyRoutes(head), 'login: .user.login, body', JSON.stringify([{ login: 'piekstra', body: reviewMark(old) }, { login: 'piekstra', body: reviewMarkBody({ sha: head, blocking: 1, major: 0, minor: 0, run: 'r2' }) }]) + '\n'));
+  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
+  expect(r.ok).toBe(false);
+  const review = (r.data as { checks: { name: string; ok: boolean; detail: string }[] }).checks.find((c) => c.name === 'review')!;
+  expect(review.ok).toBe(false);
+  expect(review.detail).toContain('1 Blocking, 0 Major');
+});
+
+test('ready: an evidence comment from anyone but the PR author or the reviewer is ignored', async () => {
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
+  const head = git(root, 'rev-parse', 'HEAD');
+  fakeGh(withRoute(readyRoutes(head), 'hh-evidence', JSON.stringify([{ login: 'mallory', body: marker(head), html_url: 'u', updated_at: '1' }]) + '\n'));
+  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
+  expect(r.ok).toBe(false);
+  expect((r.data as { checks: { detail: string }[] }).checks[1].detail).toContain('no evidence comment');
 });

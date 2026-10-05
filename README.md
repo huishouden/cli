@@ -53,11 +53,14 @@ and the exact workflow refs), pushes it when the branch has an upstream, and pri
 so the PR carries it. `--no-bump-kit` skips it; it never runs on `main` or over uncommitted edits
 to `package.json`, `bun.lock` or the workflows.
 
-`hh dev ready` accepts a review or evidence of an earlier commit when the diff since it touches
-only the kit: `package.json` changed only in its `@huishouden/pwa-kit` pin, `bun.lock`, and
-`.github/workflows/*.y(a)ml` changed only in their `huishouden/pwa-kit/.github/workflows/*@vX.Y.Z`
-refs, and the earlier commit is an ancestor. Any other file or change refuses, and review and
-evidence are redone.
+`hh dev ready` accepts a review or evidence of an earlier commit (an ancestor) when the diff since
+it touches only the kit: `package.json` changed only in its `@huishouden/pwa-kit` pin (to
+huishouden/pwa-kit's release at an equal or later exact tag), `.github/workflows/*.y(a)ml` changed
+only in their `huishouden/pwa-kit/.github/workflows/*@vX.Y.Z` refs (exact tags, none going back),
+and `bun.lock` changed only on lines naming the kit. Any other file or change refuses, and review
+and evidence are redone. An earlier review is used only when nothing reviewed the head itself (a
+failing review of the head is never replaced), and evidence comments count only from the PR author
+or the reviewer.
 
 `hh dev bump-kit` moves `@huishouden/pwa-kit` (to the latest release's tarball URL when the release
 has one, else its git tag) and the `huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z` workflow

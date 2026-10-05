@@ -100,15 +100,16 @@ export function post(repo: Repo, pr: number, e: Evidence, limit = 20): string {
   return shOk(['gh', 'api', `repos/${repo.slug}/issues/${pr}/comments`, '-F', `body=@${file}`, '--jq', '.html_url']);
 }
 
-/** The newest evidence comment on the PR, by anyone. */
-export function latestEvidence(repo: Repo, pr: number): { sha: string; mode: string; ok: boolean; url: string } | null {
-  const r = sh(['gh', 'api', `repos/${repo.slug}/issues/${pr}/comments`, '--paginate', '--jq', `[.[] | select(.body | contains("<!-- ${MARKER} ")) | {body, html_url, updated_at}]`]);
+/** The newest evidence comment on the PR from one of `trusted` (anyone's marker would do otherwise). */
+export function latestEvidence(repo: Repo, pr: number, trusted: ReadonlySet<string>): { sha: string; mode: string; ok: boolean; url: string } | null {
+  const r = sh(['gh', 'api', `repos/${repo.slug}/issues/${pr}/comments`, '--paginate', '--jq', `[.[] | select(.body | contains("<!-- ${MARKER} ")) | {login: .user.login, body, html_url, updated_at}]`]);
   if (r.code !== 0) return null;
   const all = r.stdout
     .trim()
     .split('\n')
     .filter(Boolean)
-    .flatMap((l) => JSON.parse(l) as { body: string; html_url: string; updated_at: string }[])
+    .flatMap((l) => JSON.parse(l) as { login: string; body: string; html_url: string; updated_at: string }[])
+    .filter((c) => trusted.has(c.login))
     .sort((a, b) => a.updated_at.localeCompare(b.updated_at));
   const last = all.at(-1);
   const m = last && parseMarker(last.body);

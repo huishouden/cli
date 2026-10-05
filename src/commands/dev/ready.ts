@@ -7,7 +7,7 @@ import { fetchBase } from '../../lib/repo';
 import { sh, shOk } from '../../lib/sh';
 import { kitOnlyDiff } from '../../lib/carry';
 import { prAfterSync, syncedRepo, type KitSyncDeps } from '../../lib/kitbump';
-import { defaultReviewer, headReview, issueComments, judgeReview, markedShas, reviewedShas, reviewThreads } from '../../lib/review';
+import { defaultReviewer, headReview, issueComments, judgeReview, judgeWithCarry, reviewCandidates, reviewedShas, reviewThreads, trustedLogins } from '../../lib/review';
 
 export interface Check {
   name: string;
@@ -36,6 +36,8 @@ export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result>
   if (kit.status === 'bumped') actions.push(`kit ${kit.from} → ${kit.to} committed and pushed`);
   const reviewer = flagString(ctx.flags, 'reviewer') ?? defaultReviewer();
   const root = repo.root;
+  // Evidence comments count only from the PR author or the reviewer, as review markers do.
+  const trusted = trustedLogins(reviewer, pr.author?.login);
   const fullSha = (sha: string) => sh(['git', 'rev-parse', '--verify', '-q', `${sha}^{commit}`], { cwd: root }).stdout.trim() || undefined;
   const carriedNote = (sha: string, why: string) => `carried from ${sha.slice(0, 7)} to ${head.slice(0, 7)}: ${why}`;
 
@@ -45,24 +47,11 @@ export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result>
     // (a clean review posts nothing as the reviewer) the hh-review marker for the head commit from
     // the PR author or the reviewer. A review of an earlier commit stands when only the kit moved since.
     const judge = (sha: string) => judgeReview({ head: sha, reviewer, author: pr.author?.login, review: headReview(repo, pr.number, sha, reviewer), threads: () => reviewThreads(repo, pr.number), comments });
-    let verdict = judge(head);
-    if (!verdict.ok) {
-      const trusted = new Set([reviewer, ...(pr.author ? [pr.author.login] : [])]);
-      const earlier = [...new Set([...reviewedShas(repo, pr.number, reviewer), ...markedShas(comments, trusted)])].reverse().filter((s) => s !== head);
-      for (const sha of earlier) {
-        const diff = kitOnlyDiff(root, sha, head);
-        if (!diff.ok) continue;
-        const v = judge(sha);
-        if (v.ok) {
-          verdict = { ok: true, detail: `${v.detail}; ${carriedNote(sha, diff.detail)}` };
-          break;
-        }
-      }
-    }
+    const verdict = judgeWithCarry(head, judge, reviewCandidates(reviewedShas(repo, pr.number, reviewer), comments, reviewer, pr.author?.login, head), (sha) => kitOnlyDiff(root, sha, head));
     const checks: Check[] = [{ name: 'review', ok: verdict.ok, detail: verdict.detail }];
 
     // 2. Evidence for the head commit, passed (or for an earlier one with only the kit moved since).
-    const ev = latestEvidence(repo, pr.number);
+    const ev = latestEvidence(repo, pr.number, trusted);
     if (!ev) checks.push({ name: 'evidence', ok: false, detail: 'no evidence comment (hh dev evidence)' });
     else if (head.startsWith(ev.sha)) checks.push({ name: 'evidence', ok: ev.ok, detail: ev.ok ? `${ev.mode} evidence passed: ${ev.url}` : `${ev.mode} evidence FAILED: ${ev.url}` });
     else {
@@ -76,7 +65,7 @@ export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result>
   let checks = evaluate();
   if (kit.status === 'bumped' && !dry && checks.some((c) => !c.ok)) {
     // Something besides the kit moved since the last review or evidence: redo what is not current.
-    const prior = latestEvidence(repo, pr.number);
+    const prior = latestEvidence(repo, pr.number, trusted);
     const sub = { ...ctx, flags: { ...ctx.flags, 'no-bump-kit': true } };
     if (!checks[0].ok) {
       const r = await (deps.review ?? find('dev', 'review')!.run)(sub);
