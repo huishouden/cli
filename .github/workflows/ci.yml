@@ -1,8 +1,7 @@
 name: ci
 
-# main only (pwa-kit STANDARD.md "CI/CD"): tests, then the package.json version tagged once as
-# v<version> with its GitHub release (`hh self-update` installs the latest). No tag moves.
-# Pull requests are verified by their author.
+# main only: tests, then the release (below). No tag moves. Pull requests are verified by their
+# author (`hh dev evidence`).
 on:
   push:
     branches: [main]
@@ -22,16 +21,22 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: huishouden/pwa-kit/actions/leak-scan@v0
-      - uses: huishouden/pwa-kit/actions/license-check@v0
+      - uses: huishouden/pwa-kit/actions/leak-scan@6bb7c7c8bac4f5669e7a857707597ef786d552f6 # v0
+      - uses: huishouden/pwa-kit/actions/license-check@6bb7c7c8bac4f5669e7a857707597ef786d552f6 # v0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run test
       - run: ./src/main.ts --help
 
-  tag:
+  # Versioning is CI's, never a commit: the next semver from the Conventional Commit titles since
+  # the last v* tag (scripts/next-version.ts; chore/docs/test/ci alone release nothing), an annotated
+  # tag, and a GitHub release with generated notes and the tarball `hh self-update` installs.
+  # package.json stays 0.0.0; the tarball is packed with the release's version.
+  release:
     needs: test
+    # A manual dispatch from a branch must not tag or publish it.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,24 +44,33 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Tag the version and create its release
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Tag, pack and release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          v=$(jq -r .version package.json)
-          # Exact tags only: v<version> is created once and never moved. Each step is skipped when
-          # already done, so a failed release is created on the next run without touching the tag.
-          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
-            echo "v$v already tagged"
+          set -euo pipefail
+          git fetch --tags --force
+          next=$(bun scripts/next-version.ts)
+          if [ -n "$next" ]; then
+            prev=${next% *}; v=${next#* }; [ "$prev" = "-" ] && prev=""
+            if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+              echo "v$v already tagged"
+            else
+              git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v$v" -m "v$v"
+              git push origin "v$v"
+            fi
           else
-            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v$v" -m "v$v"
-            git push origin "v$v"
+            # Nothing new to release. A tag whose release failed half-way is finished from the tag.
+            prev=""
+            last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+            if [ -z "$last" ] || gh release view "$last" >/dev/null 2>&1; then echo "nothing to release"; exit 0; fi
+            v=${last#v}
+            git checkout -q "$last"
+            prev=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | sed -n 2p)
           fi
           if gh release view "v$v" >/dev/null 2>&1; then echo "release v$v exists"; exit 0; fi
-          V="$v" python3 -c 'import os,re,sys; v=re.escape(os.environ["V"]); out=[]; on=False
-          for l in open("CHANGELOG.md"):
-              if re.match(r"^##+ \[?v?"+v+r"([\] (]|$)", l): on=True; continue
-              if on and re.match(r"^#{1,2} ", l): break
-              if on: out.append(l)
-          sys.stdout.write("".join(out).strip()+"\n")' > "$RUNNER_TEMP/notes.md"
-          gh release create "v$v" --verify-tag --title "v$v" --notes-file "$RUNNER_TEMP/notes.md"
+          jq --arg v "$v" '.version = $v' package.json > "$RUNNER_TEMP/package.json"
+          cp "$RUNNER_TEMP/package.json" package.json
+          bun pm pack --filename "cli-$v.tgz" --quiet
+          gh release create "v$v" "cli-$v.tgz" --verify-tag --title "v$v" --generate-notes ${prev:+--notes-start-tag "$prev"}

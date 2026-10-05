@@ -10,6 +10,7 @@ import './commands/account';
 import pkg from '../package.json';
 import { dailyUpdateWarning } from './lib/update';
 import { cacheDir } from './lib/review';
+import { autoUpdate, isSourceCheckout } from './lib/autoupdate';
 
 
 function help(group?: string): string {
@@ -53,13 +54,19 @@ async function main(argv: string[]): Promise<number> {
   }
   const json = !!flags.json;
   if (command.updateCheck !== false) {
-    const warning = dailyUpdateWarning(pkg.version, { dir: cacheDir() });
-    if (warning) console.error(warning);
+    const u = await autoUpdate({ version: pkg.version, argv, dir: cacheDir(), sourceCheckout: isSourceCheckout(import.meta.dir) });
+    if (u.status === 'updated') return u.code;
+    if (u.status === 'failed') console.error(`hh: ${u.message}`);
+    // Opted out of installing: still say when a release is waiting.
+    if (u.status === 'skipped' && u.reason === 'opt-out') {
+      const warning = dailyUpdateWarning(pkg.version, { dir: cacheDir() });
+      if (warning) console.error(warning);
+    }
   }
   const ctx: Ctx = { args, flags, json, cwd: process.cwd(), log: (l) => (json ? console.error(l) : console.log(l)) };
   try {
     const r = await command.run(ctx);
-    if (json) console.log(JSON.stringify({ ok: r.ok, command: `${group} ${name}`, ...(r.data as object) }, null, 2));
+    if (json) console.log(JSON.stringify({ ...(r.data as object), ok: r.ok, command: `${group} ${name}` }, null, 2));
     else if (r.text) console.log(r.text);
     return r.ok ? 0 : 1;
   } catch (e) {

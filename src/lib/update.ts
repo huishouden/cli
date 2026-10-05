@@ -1,5 +1,5 @@
 // Finding the newest hh release and telling people when theirs is behind. Releases are exact tags
-// (`v<version>`, one GitHub release each); nothing moves.
+// (`v<version>`, one GitHub release each, the tarball attached); nothing moves.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { compare } from './semver';
@@ -25,7 +25,10 @@ export function parseReleaseTag(stdout: string): string {
 
 export const isOutdated = (current: string, latestTag: string): boolean => compare(current, latestTag.replace(/^v/, '')) < 0;
 
-export const installCommand = (tag: string): string[] => ['bun', 'add', '-g', `@huishouden/cli@github:huishouden/cli#${tag}`];
+/** The release's tarball, attached to it by CI (a public URL: no token, no git clone). */
+export const tarballUrl = (tag: string): string => `https://github.com/huishouden/cli/releases/download/${tag}/cli-${tag.slice(1)}.tgz`;
+
+export const installCommand = (tag: string): string[] => ['bun', 'add', '-g', tarballUrl(tag)];
 
 export interface WarningOptions {
   now?: number;

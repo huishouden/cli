@@ -160,3 +160,6 @@ export function upsertReviewComment(repo: Repo, pr: number, m: ReviewMark): { lo
 export function cacheDir(): string {
   return process.env.HH_CACHE_DIR ?? join(homedir(), '.cache', 'hh');
 }
+
+/** The account whose review counts: HH_REVIEWER, else piekstra-dev. */
+export const defaultReviewer = (): string => process.env.HH_REVIEWER ?? 'piekstra-dev';

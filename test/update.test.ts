@@ -2,7 +2,7 @@ import { beforeEach, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bumpWorkflowRefs } from '../src/commands/dev/bump-kit';
+import { bumpWorkflowRefs } from '../src/lib/kitbump';
 import { dailyUpdateWarning, installCommand, isOutdated, parseReleaseTag } from '../src/lib/update';
 
 let dir: string;
@@ -16,8 +16,8 @@ test('outdated compares versions, not strings', () => {
   expect(isOutdated('1.4.0', 'v1.3.2')).toBe(false);
 });
 
-test('self-update installs the exact tag', () => {
-  expect(installCommand('v1.4.0')).toEqual(['bun', 'add', '-g', '@huishouden/cli@github:huishouden/cli#v1.4.0']);
+test('self-update installs the release tarball', () => {
+  expect(installCommand('v1.4.0')).toEqual(['bun', 'add', '-g', 'https://github.com/huishouden/cli/releases/download/v1.4.0/cli-1.4.0.tgz']);
 });
 
 test('release tag parsing refuses anything but vX.Y.Z', () => {
@@ -51,4 +51,31 @@ test('bump-kit moves the workflow ref with the package, leaving other refs', () 
   expect(out).toContain('workflows/pwa.yml@v0.99.0\n');
   expect(out).toContain('actions/leak-scan@v0\n');
   expect(bumpWorkflowRefs(dir, 'v0.99.0')).toEqual([]);
+});
+
+test('next-version: tag and release only for feat, fix, perf, refactor or breaking commits since the last tag', () => {
+  const git = (...a: string[]) => {
+    const p = Bun.spawnSync(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { cwd: dir });
+    if (p.exitCode !== 0) throw new Error(p.stderr.toString());
+    return p.stdout.toString().trim();
+  };
+  const next = () => Bun.spawnSync(['bun', join(import.meta.dir, '..', 'scripts', 'next-version.ts')], { cwd: dir }).stdout.toString().trim();
+  const commit = (m: string) => git('commit', '-q', '--allow-empty', '-m', m);
+  git('init', '-q', '-b', 'main');
+  commit('chore: scaffold');
+  expect(next()).toBe(''); // nothing releasable and no tag: no release
+  commit('feat: first');
+  expect(next()).toBe('- 1.0.0');
+  git('tag', '-a', 'v1.4.0', '-m', 'v1.4.0');
+  git('tag', '-a', 'v1.10.0', '-m', 'v1.10.0');
+  commit('docs: x');
+  commit('ci: y');
+  commit('chore: kit v0.99.0');
+  expect(next()).toBe('');
+  commit('fix(dev): z');
+  expect(next()).toBe('v1.10.0 1.10.1');
+  commit('feat: w');
+  expect(next()).toBe('v1.10.0 1.11.0');
+  commit('refactor!: v');
+  expect(next()).toBe('v1.10.0 2.0.0');
 });

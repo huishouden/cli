@@ -1,7 +1,8 @@
 {
   "name": "@huishouden/cli",
-  "version": "1.4.0",
+  "version": "0.0.0",
   "private": true,
+  "files": ["src", "LICENSE", "README.md"],
   "description": "hh: the Huishouden command line (developer process, operations, household data)",
   "license": "PolyForm-Shield-1.0.0",
   "type": "module",

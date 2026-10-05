@@ -1,51 +1,39 @@
 // hh dev bump-kit: @huishouden/pwa-kit to its latest tag, and the reusable workflow refs
 // (huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z) with it, then lint and unit tests. Run it whenever
-// you touch a repo (pwa-kit STANDARD.md "Versions"); nothing bumps dependencies on a schedule.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+// you touch a repo (hh dev verify|evidence|review|ready do it for you as a commit); nothing bumps dependencies on a schedule.
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { register } from '../../registry';
 import { hasScript, repoAt } from '../../lib/repo';
-import { stream } from '../../lib/sh';
+import { sh, stream } from '../../lib/sh';
 import { latestKitTag } from '../../lib/kit';
+import { kitHasTarball, kitPin, kitSpec, writeKitBump } from '../../lib/kitbump';
 import { isExactTag } from '../../lib/update';
-
-const WORKFLOW_REF = /(huishouden\/pwa-kit\/\.github\/workflows\/[\w.-]+\.ya?ml@)(\S+?)(?=["'\s]|$)/g;
-
-/** Points every pwa-kit reusable-workflow reference at `to`; returns the files changed. */
-export function bumpWorkflowRefs(root: string, to: string): string[] {
-  const dir = join(root, '.github', 'workflows');
-  if (!existsSync(dir)) return [];
-  const changed: string[] = [];
-  for (const f of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
-    const text = readFileSync(join(dir, f), 'utf8');
-    const next = text.replace(WORKFLOW_REF, (_m, head) => `${head}${to}`);
-    if (next !== text) {
-      writeFileSync(join(dir, f), next);
-      changed.push(`.github/workflows/${f}`);
-    }
-  }
-  return changed;
-}
 
 register({
   group: 'dev',
   name: 'bump-kit',
-  summary: 'Move @huishouden/pwa-kit and the pwa-kit workflow refs to its latest exact tag, install, lint and unit-test',
+  summary: 'Move @huishouden/pwa-kit (its release tarball, else the git tag) and the pwa-kit workflow refs to the latest exact tag, install, lint and unit-test',
   usage: 'hh dev bump-kit [--to=vX.Y.Z] [--no-check] [--json]',
   valued: ['to'],
   async run(ctx) {
     const repo = repoAt(ctx.cwd);
     const pkgPath = join(repo.root, 'package.json');
-    const text = readFileSync(pkgPath, 'utf8');
-    const m = /("@huishouden\/pwa-kit"\s*:\s*"[^"#]*#)(v[\d.]+)(")/.exec(text);
-    if (!m) return { ok: false, data: { error: 'no @huishouden/pwa-kit pinned to a tag' }, text: 'package.json pins no @huishouden/pwa-kit tag' };
+    const pin = kitPin(readFileSync(pkgPath, 'utf8'));
+    if (!pin) return { ok: false, data: { error: 'no @huishouden/pwa-kit pinned to a tag' }, text: 'package.json pins no @huishouden/pwa-kit tag' };
     const to = typeof ctx.flags.to === 'string' ? ctx.flags.to : latestKitTag();
     if (!isExactTag(to)) return { ok: false, data: { error: `--to must be an exact tag like v0.99.0, got ${to}` }, text: `--to must be an exact tag like v0.99.0, got ${to}` };
-    const from = m[2];
-    const workflows = bumpWorkflowRefs(repo.root, to);
-    if (from === to) return { ok: true, data: { from, to, changed: workflows.length > 0, workflows }, text: workflows.length ? `pwa-kit is already ${to}; workflow refs now ${to}: ${workflows.join(', ')}` : `pwa-kit is already ${to}` };
-    writeFileSync(pkgPath, text.replace(m[0], `${m[1]}${to}${m[3]}`));
-    ctx.log(`pwa-kit ${from} → ${to}`);
+    const from = pin.tag;
+    const files = ['package.json', 'bun.lock', '.github/workflows'].filter((p) => existsSync(join(repo.root, p)));
+    if (sh(['git', 'status', '--porcelain', '--', ...files], { cwd: repo.root }).stdout.trim()) {
+      const error = `${files.join(', ')} have uncommitted changes: commit or stash them first (a failed install is undone with git checkout)`;
+      return { ok: false, data: { error }, text: error };
+    }
+    const spec = kitSpec(to, kitHasTarball(to));
+    const written = writeKitBump(repo.root, to, spec)!;
+    const workflows = written.workflows;
+    if (!written.pkg) return { ok: true, data: { from, to, changed: workflows.length > 0, workflows }, text: workflows.length ? `pwa-kit is already ${to}; workflow refs now ${to}: ${workflows.join(', ')}` : `pwa-kit is already ${to}` };
+    ctx.log(`pwa-kit ${from} → ${to} (${spec})`);
     const steps: { step: string; code: number }[] = [];
     for (const [step, cmd] of [
       ['install', ['bun', 'install']],
@@ -54,13 +42,17 @@ register({
       if (step !== 'install' && !hasScript(repo, step)) continue;
       const code = await stream(cmd, { cwd: repo.root, json: ctx.json });
       steps.push({ step, code });
-      if (code !== 0) break;
+      if (code !== 0) {
+        // A bump whose install failed is undone; a failed lint or test leaves it for you to fix.
+        if (step === 'install') sh(['git', 'checkout', '--', ...files], { cwd: repo.root });
+        break;
+      }
     }
     const ok = steps.every((s) => s.code === 0);
     return {
       ok,
       data: { from, to, changed: true, workflows, steps },
-      text: `pwa-kit ${from} → ${to}: ${steps.map((s) => `${s.step} ${s.code === 0 ? 'ok' : 'FAILED'}`).join(', ')}. Commit package.json, bun.lock and the workflow refs with the PR (and a version bump: hh dev release).`,
+      text: `pwa-kit ${from} → ${to}: ${steps.map((s) => `${s.step} ${s.code === 0 ? 'ok' : 'FAILED'}`).join(', ')}. Commit package.json, bun.lock and the workflow refs with the PR.`,
     };
   },
 });

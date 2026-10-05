@@ -40,7 +40,7 @@ export interface Command {
 }
 
 export const GROUPS: Record<string, string> = {
-  dev: 'Changing a repo: verify, evidence, release, ready, review, bump-kit',
+  dev: 'Changing a repo: verify, evidence, ready, review, bump-kit (release is retired: CI versions on merge)',
   ops: 'Operating the suite: auth domains, OAuth origins and redirect URIs, secrets, monitoring, household roles, profile check, staging cleanup',
   data: "The household's data as the signed-in person, under the household's rules (`hh login` first); the AI connector's tools",
   account: 'Signing in: login, logout, whoami; self-update',
