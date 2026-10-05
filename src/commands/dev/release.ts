@@ -47,7 +47,8 @@ register({
     writeFileSync(clPath, insertSection(existsSync(clPath) ? readFileSync(clPath, 'utf8') : '', to, section));
     if (ctx.flags.commit) {
       shOk(['git', 'add', 'package.json', 'CHANGELOG.md'], { cwd: repo.root });
-      shOk(['git', 'commit', '-q', '-m', `chore: release ${to}`], { cwd: repo.root });
+      // Re-running after commits that add no CHANGELOG lines changes nothing: no empty commit.
+      if (sh(['git', 'diff', '--cached', '--quiet'], { cwd: repo.root }).code !== 0) shOk(['git', 'commit', '-q', '-m', `chore: release ${to}`], { cwd: repo.root });
     }
     return {
       ok: true,

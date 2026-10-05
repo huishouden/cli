@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import { flagString, register } from '../../registry';
 import { currentPr, repoAt, scratchDir } from '../../lib/repo';
 import { has, sh } from '../../lib/sh';
-import { openBlocking, parseRollup, reviewThreads } from '../../lib/review';
+import { headReview, openBlocking, parseRollup, reviewThreads } from '../../lib/review';
 export { openBlocking, parseRollup } from '../../lib/review';
 
 const PROFILE = 'reviewer';
+const REVIEWER = process.env.HH_REVIEWER ?? 'piekstra-dev';
 const REVIEWERS_REPO = 'huishouden/cr-reviewers';
 
 export function reviewersPath(): string {
@@ -82,15 +83,28 @@ register({
     const seenFile = join(repo.root, '.hh', `cr-${pr.number}.reviewers`);
     const fresh = !!agents && (!existsSync(seenFile) || readFileSync(seenFile, 'utf8').trim() !== agents.sha);
     const args = ['cr', 'review', pr.url, '--profile', PROFILE, '--max-agents', '8', '--json', ...(fresh ? ['--fresh-session'] : []), ...(agents && !agents.registered ? ['--agents-dir', agents.agents] : [])];
-    const code = await withLock(ctx.log, async () => {
-      ctx.log(args.join(' '));
-      const r = Bun.spawn(args, {
-        env: { ...process.env, CR_CLAUDE_FOREGROUND: '1' },
-        stdout: 'pipe',
-        stderr: ctx.json ? 'pipe' : 'inherit',
-      });
+    const runCr = async (argv: string[]) => {
+      ctx.log(argv.join(' '));
+      const r = Bun.spawn(argv, { env: { ...process.env, CR_CLAUDE_FOREGROUND: '1' }, stdout: 'pipe', stderr: ctx.json ? 'pipe' : 'inherit' });
       writeFileSync(out, await new Response(r.stdout).text());
       return r.exited;
+    };
+    const decision = () => {
+      try {
+        return JSON.parse(readFileSync(out, 'utf8')).decision as string | undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    const code = await withLock(ctx.log, async () => {
+      let c = await runCr(args);
+      // cr skips a review when it judges the last one current (early_exit); the ready check needs a
+      // review of the head commit itself, so ask again with --rerun.
+      if (c === 0 && decision() === 'early_exit' && !headReview(repo, pr.number, pr.headRefOid, REVIEWER)) {
+        ctx.log('cr kept its earlier review; asking for one of the head commit (--rerun)');
+        c = await runCr([...args.filter((a) => a !== '--fresh-session'), '--rerun']);
+      }
+      return c;
     });
     if (agents && code === 0) writeFileSync(seenFile, agents.sha);
     let rollup = '';
