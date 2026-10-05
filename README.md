@@ -5,7 +5,8 @@ to come, the household's data as the signed-in person (`hh data`). Every command
 one JSON document on stdout, progress on stderr.
 
 ```sh
-bun add -g github:huishouden/cli#v1     # installs `hh`; run again to update to the latest 1.x
+bun add -g github:huishouden/cli#v1     # installs `hh`
+bun remove -g @huishouden/cli && bun add -g github:huishouden/cli#v1   # update: bun caches #v1
 bunx github:huishouden/cli#v1.1.1 dev ready   # no install, with an exact tag (bunx caches moving tags)
 ```
 
