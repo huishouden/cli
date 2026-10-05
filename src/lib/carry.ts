@@ -1,7 +1,7 @@
 // Reusing a review or evidence across a kit bump. The bump moves the head but changes nothing the
 // reviewer or the tests judged, so a result for the earlier commit stands when everything that
 // changed since is the kit pin, bun.lock and the kit's workflow refs, and nothing else.
-import { PIN, WORKFLOW_REF, kitPin, kitSpec } from './kitbump';
+import { PIN, WORKFLOW_REF, kitPin, kitSpec, kitTarballUrl } from './kitbump';
 import { compare } from './semver';
 import { sh } from './sh';
 
@@ -36,22 +36,52 @@ function refMoveOk(before: string, after: string): string | null {
   return back ? `a kit workflow ref goes back to ${back}` : null;
 }
 
-const LOCK_WORKSPACE = /^[+-]\s*"@huishouden\/pwa-kit": "([^"]+)",?$/;
-const LOCK_ENTRY = /^[+-]\s*"@huishouden\/pwa-kit": \["@huishouden\/pwa-kit@(github:huishouden\/pwa-kit#[0-9a-f]{7,40}|https:\/\/github\.com\/huishouden\/pwa-kit\/releases\/download\/v\d+\.\d+\.\d+\/pwa-kit-\d+\.\d+\.\d+\.tgz)",/;
+const LOCK_WORKSPACE = /^([+-])\s*"@huishouden\/pwa-kit": "([^"]+)",?$/;
+const LOCK_ENTRY = /^([+-])\s*"@huishouden\/pwa-kit": \["@huishouden\/pwa-kit@([^"]+)", \{.*\}, "[^"]*"\],?$/;
+
+/** The commit a kit tag points to (peeled), from the kit's repository; undefined when it cannot be asked. */
+export function remoteTagCommit(tag: string): string | undefined {
+  const r = sh(['git', 'ls-remote', 'https://github.com/huishouden/pwa-kit.git', `refs/tags/${tag}`, `refs/tags/${tag}^{}`], { timeoutMs: 20_000 });
+  if (r.code !== 0) return undefined;
+  const lines = r.stdout.split('\n').filter(Boolean).map((l) => l.split('\t'));
+  return (lines.find((l) => l[1]?.endsWith('^{}')) ?? lines[0])?.[0];
+}
+
+export interface CarryOptions {
+  /** The commit a kit tag points to; defaults to asking GitHub. */
+  tagCommit?: (tag: string) => string | undefined;
+}
 
 /**
  * bun.lock: only the kit's two lines may change (the workspace pin, and its resolved entry), and
- * only to huishouden/pwa-kit's own sources: its release tarball or a commit of its repository.
- * Any other line (another package's resolution, or the kit resolved from elsewhere) refuses. A
- * tarball's integrity hash is not recomputed here; a hash that does not match fails the install.
+ * what they resolve to must be the release the package.json pin names (`tag`): its tarball URL, or
+ * a commit (7+ hex digits) that the tag points to in huishouden/pwa-kit. Any other line, or the kit
+ * resolved from anywhere else, refuses; so does a tag whose commit cannot be looked up. A
+ * tarball's integrity hash is not recomputed; a hash that does not match fails the install.
  */
-function lockOk(root: string, from: string, to: string): string | null {
+function lockOk(root: string, from: string, to: string, pinned: { tag: string; spec: string }, tagCommit: (tag: string) => string | undefined): string | null {
   const changed = sh(['git', 'diff', '-U0', from, to, '--', 'bun.lock'], { cwd: root }).stdout.split('\n').filter((l) => /^[+-](?![+-]{2})/.test(l));
   for (const l of changed) {
+    const added = l.startsWith('+');
     const ws = LOCK_WORKSPACE.exec(l);
-    if (ws && (ws[1] === kitSpec(kitPin(`"@huishouden/pwa-kit": "${ws[1]}"`)?.tag ?? '', true) || ws[1] === kitSpec(kitPin(`"@huishouden/pwa-kit": "${ws[1]}"`)?.tag ?? '', false))) continue;
-    if (LOCK_ENTRY.test(l)) continue;
-    return `bun.lock changes beyond the kit's own entry: ${l.slice(0, 90).trim()}`;
+    if (ws) {
+      if (!added || ws[2] === pinned.spec) continue;
+      return `bun.lock's workspace pin ${ws[2]} is not package.json's ${pinned.spec}`;
+    }
+    const entry = LOCK_ENTRY.exec(l);
+    if (!entry) return `bun.lock changes beyond the kit's own entry: ${l.slice(0, 90).trim()}`;
+    const src = entry[2];
+    const shape = /^(github:huishouden\/pwa-kit#[0-9a-f]{7,40}|https:\/\/github\.com\/huishouden\/pwa-kit\/releases\/download\/v\d+\.\d+\.\d+\/pwa-kit-\d+\.\d+\.\d+\.tgz)$/.test(src);
+    if (!shape) return `bun.lock resolves the kit from ${src}`;
+    if (!added) continue;
+    if (src.startsWith('https://')) {
+      if (src !== kitTarballUrl(pinned.tag)) return `bun.lock resolves the kit to ${src}, not ${pinned.tag}'s tarball`;
+    } else {
+      const sha = src.split('#')[1];
+      const commit = tagCommit(pinned.tag);
+      if (!commit) return `could not look up the commit of ${pinned.tag} to check bun.lock`;
+      if (!commit.startsWith(sha)) return `bun.lock resolves the kit to commit ${sha}, not ${pinned.tag} (${commit.slice(0, 7)})`;
+    }
   }
   return null;
 }
@@ -67,10 +97,10 @@ export function newestFirst(root: string, head: string, shas: string[]): string[
  * True when `from` is an ancestor of `to` and the tree difference is only: package.json with just
  * its pwa-kit pin changed (to huishouden/pwa-kit's release at an equal or later exact tag),
  * `.github/workflows/*.y(a)ml` with just their `huishouden/pwa-kit/.github/workflows/*@vX.Y.Z` refs
- * changed (to exact tags, none going back), and bun.lock changed only on the kit's own two lines, resolved from huishouden/pwa-kit. At
+ * changed (to exact tags, none going back), and bun.lock changed only on the kit's own two lines, resolved to the release package.json pins. At
  * least one file must have changed; any other file or change refuses.
  */
-export function kitOnlyDiff(root: string, from: string, to: string): CarryVerdict {
+export function kitOnlyDiff(root: string, from: string, to: string, opts: CarryOptions = {}): CarryVerdict {
   const git = (...a: string[]) => sh(['git', ...a], { cwd: root });
   const no = (detail: string): CarryVerdict => ({ ok: false, detail });
   if (git('merge-base', '--is-ancestor', from, to).code !== 0) return no(`${from.slice(0, 7)} is not an ancestor of ${to.slice(0, 7)}`);
@@ -78,7 +108,9 @@ export function kitOnlyDiff(root: string, from: string, to: string): CarryVerdic
   if (!files.length) return no('no change since the reviewed commit');
   for (const f of files) {
     if (f === 'bun.lock') {
-      const why = lockOk(root, from, to);
+      const pinned = kitPin(git('show', `${to}:package.json`).stdout);
+      if (!pinned) return no('package.json has no exact kit pin');
+      const why = lockOk(root, from, to, pinned, opts.tagCommit ?? remoteTagCommit);
       if (why) return no(why);
       continue;
     }

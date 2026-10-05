@@ -17,6 +17,8 @@ export interface Check {
 
 export interface ReadyDeps {
   kit?: KitSyncDeps;
+  /** The commit a kit tag points to (default: asked of GitHub). */
+  tagCommit?: (tag: string) => string | undefined;
   review?: (ctx: Ctx) => Promise<Result>;
   evidence?: (ctx: Ctx) => Promise<Result>;
 }
@@ -47,7 +49,7 @@ export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result>
     // (a clean review posts nothing as the reviewer) the hh-review marker for the head commit from
     // the PR author or the reviewer. A review of an earlier commit stands when only the kit moved since.
     const judge = (sha: string) => judgeReview({ head: sha, reviewer, author: pr.author?.login, review: headReview(repo, pr.number, sha, reviewer), threads: () => reviewThreads(repo, pr.number), comments });
-    const verdict = judgeWithCarry(head, judge, newestFirst(root, head, reviewCandidates(reviewedShas(repo, pr.number, reviewer), comments, reviewer, pr.author?.login, head)), (sha) => kitOnlyDiff(root, sha, head));
+    const verdict = judgeWithCarry(head, judge, newestFirst(root, head, reviewCandidates(reviewedShas(repo, pr.number, reviewer), comments, reviewer, pr.author?.login, head)), (sha) => kitOnlyDiff(root, sha, head, { tagCommit: deps.tagCommit }));
     const checks: Check[] = [{ name: 'review', ok: verdict.ok, detail: verdict.detail }];
 
     // 2. Evidence for the head commit, passed (or for an earlier one with only the kit moved since).
@@ -56,7 +58,7 @@ export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result>
     else if (head.startsWith(ev.sha)) checks.push({ name: 'evidence', ok: ev.ok, detail: ev.ok ? `${ev.mode} evidence passed: ${ev.url}` : `${ev.mode} evidence FAILED: ${ev.url}` });
     else {
       const full = fullSha(ev.sha);
-      const diff = ev.ok && full ? kitOnlyDiff(root, full, head) : undefined;
+      const diff = ev.ok && full ? kitOnlyDiff(root, full, head, { tagCommit: deps.tagCommit }) : undefined;
       checks.push(diff?.ok ? { name: 'evidence', ok: true, detail: `${ev.mode} evidence passed: ${ev.url}; ${carriedNote(full!, diff.detail)}` } : { name: 'evidence', ok: false, detail: `evidence is for ${ev.sha.slice(0, 7)}, head is ${head.slice(0, 7)} (hh dev evidence)` });
     }
     return checks;

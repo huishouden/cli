@@ -277,6 +277,7 @@ test('ready: needs no version bump or CHANGELOG; marks the draft ready when revi
   expect(calls().some((c) => c.startsWith('pr ready 3'))).toBe(true);
 });
 
+const TAG = (t: string) => (t === 'v0.98.0' ? 'abc1234' + '0'.repeat(33) : undefined);
 const BEHIND = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall };
 
 /** Review and evidence recorded for `sha`; after a redo they are recorded for whatever the checkout's HEAD is. */
@@ -295,7 +296,7 @@ test('ready: a kit bump alone keeps the review and evidence of the earlier commi
   const calls = fakeGh(readyRoutes(old));
   process.env.FAKE_GH_HEAD_CWD = root;
   const reran: string[] = [];
-  const res = await readyFlow(ctxFor(root), { kit: BEHIND, ...redoing(root, reran) });
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, tagCommit: TAG, ...redoing(root, reran) });
   expect(reran).toEqual([]);
   expect(git(root, 'rev-parse', 'HEAD')).not.toBe(old);
   expect(git(origin, 'rev-parse', 'feat')).toBe(git(root, 'rev-parse', 'HEAD'));
@@ -313,7 +314,7 @@ test('ready: the carry also covers a bump that an earlier command already commit
   fakeGh(readyRoutes(old));
   process.env.FAKE_GH_HEAD_CWD = root;
   const reran: string[] = [];
-  const res = await readyFlow(ctxFor(root), { kit: BEHIND, ...redoing(root, reran) });
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, tagCommit: TAG, ...redoing(root, reran) });
   expect(reran).toEqual([]);
   expect(res.ok).toBe(true);
 });
@@ -328,7 +329,7 @@ test('ready: a change besides the kit since the review is not carried: review an
   fakeGh(readyRoutes(old));
   process.env.FAKE_GH_HEAD_CWD = root;
   const reran: string[] = [];
-  const res = await readyFlow(ctxFor(root), { kit: BEHIND, ...redoing(root, reran) });
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, tagCommit: TAG, ...redoing(root, reran) });
   expect(reran).toEqual(['review:true:', 'evidence:true:true']);
   expect(res.ok).toBe(true);
   expect(JSON.stringify(res.data)).not.toContain('carried');
@@ -397,7 +398,7 @@ const commitAll = (root: string, msg = 'chore: x') => (git(root, 'add', '.'), gi
 
 test('carry: the kit commit alone is accepted', () => {
   const { root, base, head } = afterBump(() => {});
-  expect(kitOnlyDiff(root, base, head)).toMatchObject({ ok: true });
+  expect(kitOnlyDiff(root, base, head, { tagCommit: TAG })).toMatchObject({ ok: true });
 });
 
 test('carry: any other file, or another change in package.json or a workflow, is refused', () => {
@@ -412,14 +413,14 @@ test('carry: any other file, or another change in package.json or a workflow, is
   for (const [name, edit] of cases) {
     dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
     const { root, base, head } = afterBump(edit);
-    expect([name, kitOnlyDiff(root, base, head).ok]).toEqual([name, false]);
+    expect([name, kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok]).toEqual([name, false]);
   }
 });
 
 test('carry: nothing changed, or a commit that is not an ancestor, is refused', () => {
   const { root, base, head } = afterBump(() => {});
-  expect(kitOnlyDiff(root, head, head).ok).toBe(false);
-  expect(kitOnlyDiff(root, head, base).ok).toBe(false);
+  expect(kitOnlyDiff(root, head, head, { tagCommit: TAG }).ok).toBe(false);
+  expect(kitOnlyDiff(root, head, base, { tagCommit: TAG }).ok).toBe(false);
 });
 
 test('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock change beyond the kit are refused', () => {
@@ -436,7 +437,7 @@ test('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock ch
   for (const [name, edit] of cases) {
     dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
     const { root, base, head } = afterBump(edit);
-    expect([name, kitOnlyDiff(root, base, head).ok]).toEqual([name, false]);
+    expect([name, kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok]).toEqual([name, false]);
   }
 });
 
@@ -499,4 +500,28 @@ test('candidates are ordered by history, not by where the review was found', () 
   expect(newestFirst(root, Z, [X, Y])).toEqual([Y, X]);
   expect(newestFirst(root, Z, [Y, X])).toEqual([Y, X]);
   expect(newestFirst(root, Z, ['f'.repeat(40), X])).toEqual([X]);
+});
+
+test('carry: the lock must resolve the kit to the release package.json pins', () => {
+  const setLock = (text: string) => (r: string) => (writeFileSync(join(r, 'bun.lock'), text), git(r, 'add', '.'), git(r, 'commit', '-q', '--allow-empty', '-m', 'chore: lock'));
+  const good = LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234');
+  const tarball = (tag: string) => `https://github.com/huishouden/pwa-kit/releases/download/${tag}/pwa-kit-${tag.slice(1)}.tgz`;
+  const entry = (src: string) => good.replace('github:huishouden/pwa-kit#abc1234', src);
+  const cases: [string, (r: string) => void, boolean][] = [
+    ['commit of the tag', setLock(good), true],
+    ['another commit of the repo', setLock(LOCK('github:huishouden/pwa-kit#v0.98.0', 'deadbee')), false],
+    ['an older tag tarball', setLock(entry(tarball('v0.90.0'))), false],
+    ['the pinned tag tarball', setLock(entry(tarball('v0.98.0'))), true],
+    ['workspace pin differs from package.json', setLock(good.replace('"github:huishouden/pwa-kit#v0.98.0"', '"github:huishouden/pwa-kit#v0.97.0"')), false],
+    ['trailing content on the entry line', setLock(good.replace('"huishouden-pwa-kit-abc1234"],', '"huishouden-pwa-kit-abc1234"], "x": 1,')), false],
+  ];
+  for (const [name, edit, ok] of cases) {
+    dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
+    const { root, base, head } = afterBump(edit);
+    expect([name, kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok]).toEqual([name, ok]);
+  }
+  // The tag's commit cannot be looked up: refuse rather than guess.
+  dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
+  const { root, base, head } = afterBump(() => {});
+  expect(kitOnlyDiff(root, base, head, { tagCommit: () => undefined })).toMatchObject({ ok: false });
 });
