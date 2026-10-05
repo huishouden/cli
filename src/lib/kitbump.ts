@@ -7,7 +7,7 @@ import type { Ctx } from '../registry';
 import { currentPr, currentPrAt, repoAt, type PullRequest, type Repo } from './repo';
 import { compare } from './semver';
 import { sh } from './sh';
-import { latestKitTag } from './kit';
+import { kitHasTarball, kitTarballUrl, latestKitTag } from './kit';
 
 export const PIN = /("@huishouden\/pwa-kit"\s*:\s*")([^"]+)(")/;
 export const WORKFLOW_REF = /(huishouden\/pwa-kit\/\.github\/workflows\/[\w.-]+\.ya?ml@)(\S+?)(?=["'\s]|$)/g;
@@ -21,16 +21,9 @@ export function kitPin(text: string): { spec: string; tag: string } | null {
   return tag ? { spec: m[2], tag } : null;
 }
 
-export const kitTarballUrl = (tag: string) => `https://github.com/huishouden/pwa-kit/releases/download/${tag}/pwa-kit-${tag.slice(1)}.tgz`;
-
 /** How to depend on the kit at `tag`: its release tarball when the release has one, else the git tag. */
 export function kitSpec(tag: string, hasTarball: boolean): string {
   return hasTarball ? kitTarballUrl(tag) : `github:huishouden/pwa-kit#${tag}`;
-}
-
-export function kitHasTarball(tag: string): boolean {
-  const r = sh(['gh', 'release', 'view', tag, '-R', 'huishouden/pwa-kit', '--json', 'assets', '--jq', '.assets[].name']);
-  return r.code === 0 && r.stdout.split('\n').includes(`pwa-kit-${tag.slice(1)}.tgz`);
 }
 
 /** Points every pwa-kit reusable-workflow reference at `to`; returns the files changed. */
@@ -112,7 +105,14 @@ export function kitSync(repo: Repo, opts: { skip?: boolean; push?: boolean; log:
     log(`! kit: latest tag ${JSON.stringify(to)} is not an exact vX.Y.Z; not bumping`);
     return { status: 'skipped', reason: 'latest kit tag is not an exact vX.Y.Z' };
   }
-  const spec = kitSpec(to, (deps.hasTarball ?? kitHasTarball)(to));
+  let spec: string;
+  try {
+    spec = kitSpec(to, (deps.hasTarball ?? kitHasTarball)(to));
+  } catch (e) {
+    // Not knowing whether the release has a tarball must not pin the wrong kind of spec.
+    log(`! kit ${to}: could not tell whether the release has a tarball (${(e as Error).message.slice(0, 120)}); not bumping`);
+    return { status: 'skipped', reason: 'kit release assets unknown' };
+  }
   if (compare(pin.tag.slice(1), to.slice(1)) > 0) return { status: 'current', from: pin.tag, to };
   const behind = pin.spec !== spec || behindWorkflows(repo.root, to).length > 0;
   if (!behind) return { status: 'current', from: pin.tag, to };

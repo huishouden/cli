@@ -7,7 +7,8 @@ import { register } from '../../registry';
 import { hasScript, repoAt } from '../../lib/repo';
 import { sh, stream } from '../../lib/sh';
 import { latestKitTag } from '../../lib/kit';
-import { kitHasTarball, kitPin, kitSpec, writeKitBump } from '../../lib/kitbump';
+import { kitHasTarball } from '../../lib/kit';
+import { kitPin, kitSpec, writeKitBump } from '../../lib/kitbump';
 import { isExactTag } from '../../lib/update';
 
 register({
