@@ -5,7 +5,7 @@
     "": {
       "name": "@huishouden/cli",
       "dependencies": {
-        "@huishouden/pwa-kit": "github:huishouden/pwa-kit#feat/household-tools-cli-signin",
+        "@huishouden/pwa-kit": "github:huishouden/pwa-kit#v0.95.1",
         "zod": "^4.6.5",
       },
       "devDependencies": {
@@ -199,7 +199,7 @@
 
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
-    "@huishouden/pwa-kit": ["@huishouden/pwa-kit@github:huishouden/pwa-kit#e9bc44a", { "dependencies": { "@newrelic/browser-agent": "^1.323.0" }, "peerDependencies": { "@playwright/test": ">=1.45", "firebase": ">=11", "lucide-react": ">=0.400", "react": ">=19", "react-dom": ">=19", "sharp": ">=0.33", "vite-plugin-pwa": ">=1.0", "zod": ">=4" }, "optionalPeers": ["@playwright/test", "firebase", "lucide-react", "react", "react-dom", "sharp", "zod"], "bin": { "pwa-icons": "./scripts/icons.ts", "pwa-design-check": "./scripts/design-check.ts", "pwa-headers-check": "./scripts/headers-check.ts", "pwa-logo": "./scripts/logo.ts", "pwa-oauth-origins": "./scripts/oauth-origins.ts", "pwa-staging": "./scripts/staging.ts", "pwa-write-check": "./scripts/write-check.ts", "pwa-reuse-check": "./scripts/reuse-check.ts", "pwa-site": "./scripts/site.ts", "pwa-i18n-check": "./scripts/i18n-check.ts", "pwa-bandwidth-check": "./scripts/bandwidth-check.ts" } }, "huishouden-pwa-kit-e9bc44a"],
+    "@huishouden/pwa-kit": ["@huishouden/pwa-kit@github:huishouden/pwa-kit#df67ea3", { "dependencies": { "@newrelic/browser-agent": "^1.323.0" }, "peerDependencies": { "@playwright/test": ">=1.45", "firebase": ">=11", "lucide-react": ">=0.400", "react": ">=19", "react-dom": ">=19", "sharp": ">=0.33", "vite-plugin-pwa": ">=1.0", "zod": ">=4" }, "optionalPeers": ["@playwright/test", "firebase", "lucide-react", "react", "react-dom", "sharp", "zod"], "bin": { "pwa-icons": "./scripts/icons.ts", "pwa-design-check": "./scripts/design-check.ts", "pwa-headers-check": "./scripts/headers-check.ts", "pwa-logo": "./scripts/logo.ts", "pwa-oauth-origins": "./scripts/oauth-origins.ts", "pwa-staging": "./scripts/staging.ts", "pwa-write-check": "./scripts/write-check.ts", "pwa-reuse-check": "./scripts/reuse-check.ts", "pwa-site": "./scripts/site.ts", "pwa-i18n-check": "./scripts/i18n-check.ts", "pwa-bandwidth-check": "./scripts/bandwidth-check.ts" } }, "huishouden-pwa-kit-df67ea3"],
 
     "@isaacs/cliui": ["@isaacs/cliui@9.0.0", "", {}, "sha512-AokJm4tuBHillT+FpMtxQ60n8ObyXBatq7jD2/JA9dxbDDokKQm8KMht5ibGzLVU9IJDIKK4TPKgMHEYMn3lMg=="],
 
