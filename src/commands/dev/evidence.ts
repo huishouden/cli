@@ -27,6 +27,7 @@ register({
   name: 'evidence',
   summary: "Verify the branch (locally or on the app's staging site) and post the PR's evidence comment",
   usage: 'hh dev evidence [--staging|--local] [--pr=N] [--no-post] [--no-screenshots] [--no-emulators] [--json]',
+  valued: ['pr'],
   async run(ctx) {
     const repo = repoAt(ctx.cwd);
     fetchBase(repo);

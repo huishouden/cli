@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.3.0](https://github.com/huishouden/cli/compare/v1.2.0...v1.3.0) (2026-10-05)
+
+### Features
+
+* **data:** health appointments (kit 0.98.0); every kit tool must have a command ([20e07fb](https://github.com/huishouden/cli/commit/20e07fbe1c117bce1f89ea8ac42d4b8ef9608d6f))
+* hh login (loopback + PKCE), hh data (the connector's tools), hh ops auth-domains, oauth-check, secret set, monitoring, roles ([1507347](https://github.com/huishouden/cli/commit/1507347ad9dae81291c6f4c3d89f45ecb240dfeb))
+
+### Bug Fixes
+
+* a sign-in file that can't be removed is reported by logout; a neutral visit in the seed ([9c77aa4](https://github.com/huishouden/cli/commit/9c77aa4fea1d951b3675e87ff093d578a61a915b))
+* **dev:** firebase-tools 15.32.1 for emulators and deploys; a Java 21+ found for the emulators ([66eb3a1](https://github.com/huishouden/cli/commit/66eb3a1fc0b16b976a846576d104fc399a925707))
+* logout names a keychain it could not clear; Health appointments in the emulator's privacy checks ([945567f](https://github.com/huishouden/cli/commit/945567f68f4503d6a4082abbccc4e14f5dfd46f4))
+* an unreachable keychain doesn't hide a sign-in the file holds; old sign-ins say so ([b24e6db](https://github.com/huishouden/cli/commit/b24e6db2611356a5d214842db08a42d478329a59))
+* unreadable sign-ins say which way; keychains tell absent from locked ([9654a06](https://github.com/huishouden/cli/commit/9654a068f0948368105b4c1d5113cdab15448bca))
+* **dev:** repos without package.json: install skipped, the version from .claude-plugin/plugin.json ([10b6c4d](https://github.com/huishouden/cli/commit/10b6c4d2c2e58e392aeffd500c7e7861cc91a757))
+* **dev:** the kit's app checks run only in app repos ([9217769](https://github.com/huishouden/cli/commit/92177690b91a3f13ce1fe800d72584d90bde561a))
+* review findings for hh login, data and ops ([5c824d7](https://github.com/huishouden/cli/commit/5c824d7f9dec4630b65b32fe99ec77c8de1f6da7))
+
+### Documentation
+
+* the update path (bun caches #v1) (#5) ([5d21a72](https://github.com/huishouden/cli/commit/5d21a729271fd6b548605be58c123b9be5c79786))
+
 ## [1.2.0](https://github.com/huishouden/cli/compare/v1.1.1...v1.2.0) (2026-10-05)
 
 ### Features

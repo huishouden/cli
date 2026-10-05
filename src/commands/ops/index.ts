@@ -1,5 +1,8 @@
-// hh ops: operating the suite. One file per command. To come: auth
-// domains, OAuth origin and redirect checks, Cloudflare and GitHub secrets from stdin only, New Relic
-// provisioning, household roles.
+// hh ops: operating the suite. One file per command.
+import './auth-domains';
+import './oauth-check';
+import './secret-set';
+import './monitoring';
+import './roles';
 import './profile-check';
 import './staging-cleanup';

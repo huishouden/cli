@@ -71,6 +71,7 @@ register({
   name: 'review',
   summary: 'Run the local cr reviewer on the PR (org reviewers included) and summarize what blocks ready',
   usage: 'hh dev review [--pr=N] [--json]',
+  valued: ['pr'],
   async run(ctx) {
     if (!has('cr')) return { ok: false, data: { error: 'cr not installed' }, text: 'cr (codereview-cli) is not installed.' };
     const repo = repoAt(ctx.cwd);

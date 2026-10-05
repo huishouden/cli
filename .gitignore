@@ -1,2 +1,5 @@
 node_modules
 .hh
+test/.emulator/
+firestore-debug.log
+*-debug.log
