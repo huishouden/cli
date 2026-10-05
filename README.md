@@ -57,7 +57,7 @@ to `package.json`, `bun.lock` or the workflows.
 it touches only the kit: `package.json` changed only in its `@huishouden/pwa-kit` pin (to
 huishouden/pwa-kit's release at an equal or later exact tag), `.github/workflows/*.y(a)ml` changed
 only in their `huishouden/pwa-kit/.github/workflows/*@vX.Y.Z` refs (exact tags, none going back),
-and `bun.lock` changed only on lines naming the kit. Any other file or change refuses, and review
+and `bun.lock` changed only on the kit's own two lines, resolving to that same release (its tarball URL, or the commit its tag points to). Any other file or change refuses, and review
 and evidence are redone. An earlier review is used only when nothing reviewed the head itself (a
 failing review of the head is never replaced), and evidence comments count only from the PR author
 or the reviewer.
