@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/huishouden/cli/compare/v1.3.1...v1.3.2) (2026-10-05)
+
+### Bug Fixes
+
+* **dev:** record only from a read rollup; the reviewer's review outranks the marker ([ee50501](https://github.com/huishouden/cli/commit/ee50501b9a24b6a7a6c4385ecc80ae32c1b89850))
+* **dev:** hh dev review records its result for the head commit; hh dev ready accepts it ([bfdce11](https://github.com/huishouden/cli/commit/bfdce113c9a0c50b48fd82ff3517e050a779d7f1))
+
 ## [1.3.1](https://github.com/huishouden/cli/compare/v1.3.0...v1.3.1) (2026-10-05)
 
 ### Bug Fixes

@@ -7,7 +7,7 @@ import { latestEvidence } from '../../lib/evidence';
 import { baseVersion, changedFiles, currentPr, fetchBase, isDocsOnly, repoAt, versionFile } from '../../lib/repo';
 import { shOk } from '../../lib/sh';
 import { compare, hasSection } from '../../lib/semver';
-import { headReview, openBlocking, reviewThreads } from '../../lib/review';
+import { headReview, issueComments, judgeReview, reviewThreads } from '../../lib/review';
 
 export interface Check {
   name: string;
@@ -29,15 +29,13 @@ register({
     const head = pr.headRefOid;
     const checks: Check[] = [];
 
-    // 1. A review of the head commit by the reviewer account, and no Blocking or Major thread open.
+    // 1. A review of the head commit: the reviewer account's with no Blocking or Major thread open, or
+    // (a clean review posts nothing as the reviewer) the hh-review marker for the head commit from
+    // the PR author or the reviewer.
     const reviewer = flagString(ctx.flags, 'reviewer') ?? 'piekstra-dev';
     const review = headReview(repo, pr.number, head, reviewer);
-    const open = review ? openBlocking(review.findings, reviewThreads(repo, pr.number)) : [];
-    checks.push({
-      name: 'review',
-      ok: !!review && open.length === 0,
-      detail: !review ? `no ${reviewer} review of ${head.slice(0, 7)} (hh dev review)` : open.length ? `${open.length} Blocking/Major finding(s) open: ${open.map((f) => f.where).join(', ')}` : `${reviewer} reviewed ${head.slice(0, 7)}; no Blocking or Major open`,
-    });
+    const verdict = judgeReview({ head, reviewer, author: pr.author?.login, review, threads: () => reviewThreads(repo, pr.number), comments: issueComments(repo, pr.number) });
+    checks.push({ name: 'review', ok: verdict.ok, detail: verdict.detail });
 
     // 2. Evidence for the head commit, passed.
     const ev = latestEvidence(repo, pr.number);

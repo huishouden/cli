@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { flagString, register } from '../../registry';
 import { currentPr, repoAt, scratchDir } from '../../lib/repo';
 import { has, sh } from '../../lib/sh';
-import { headReview, openBlocking, parseRollup, reviewThreads } from '../../lib/review';
+import { headReview, openBlocking, parseRollup, markFromReview, cacheDir, upsertReviewComment, writeReviewRecord, reviewThreads } from '../../lib/review';
 export { openBlocking, parseRollup } from '../../lib/review';
 
 const PROFILE = 'reviewer';
@@ -108,26 +108,48 @@ register({
       return c;
     });
     if (agents && code === 0) writeFileSync(seenFile, agents.sha);
-    let rollup = '';
+    // cr's result: the rollup and run id, or why there are none (nothing is recorded without a rollup).
+    let rollup: string | undefined;
+    let run = 'unknown';
+    let missing = 'cr printed no JSON';
     try {
       const j = JSON.parse(readFileSync(out, 'utf8'));
+      run = String(j.run?.run_id ?? 'unknown').replace(/[^\w.-]/g, '') || 'unknown';
       if (j.artifacts?.rollup_markdown && existsSync(j.artifacts.rollup_markdown)) rollup = readFileSync(j.artifacts.rollup_markdown, 'utf8');
+      else missing = 'cr wrote no rollup';
     } catch {
       /* cr printed no JSON */
     }
-    const findings = parseRollup(rollup);
+    const findings = parseRollup(rollup ?? '');
     const threads = reviewThreads(repo, pr.number);
     const unresolved = threads.filter((t) => !t.resolved);
     const blocking = openBlocking(findings, threads);
     const ok = code === 0 && blocking.length === 0;
+    // cr posts nothing as the reviewer on a clean review, so record the result for the head commit,
+    // only from a rollup actually read.
+    let recorded = '';
+    if (code !== 0) recorded = '';
+    else if (rollup === undefined) recorded = `! not recorded: ${missing}`;
+    else {
+      try {
+        const mark = markFromReview(pr.headRefOid, findings, threads, run);
+        const file = writeReviewRecord(cacheDir(), repo.slug, pr.number, mark, new Date());
+        const c = upsertReviewComment(repo, pr.number, mark);
+        const trusted = c.login === pr.author?.login || c.login === REVIEWER;
+        recorded = `Recorded for ${pr.headRefOid.slice(0, 7)}: ${c.result}; ${file}${trusted ? '' : `\n! ${c.login} is neither the PR author nor ${REVIEWER}: hh dev ready will ignore this marker`}`;
+      } catch (e) {
+        recorded = `! could not record the result: ${(e as Error).message.slice(0, 300)}`;
+      }
+    }
     return {
       ok,
-      data: { pr: pr.number, head: pr.headRefOid, crExit: code, reviewers: agents, freshSession: fresh, findings, unresolved, openBlocking: blocking, barMet: blocking.length === 0 },
+      data: { recorded, pr: pr.number, head: pr.headRefOid, crExit: code, reviewers: agents, freshSession: fresh, findings, unresolved, openBlocking: blocking, barMet: blocking.length === 0 },
       text: [
         `cr review of #${pr.number} at ${pr.headRefOid.slice(0, 7)}: ${findings.length} findings (${['Blocking', 'Major', 'Minor', 'Nit'].map((s) => `${findings.filter((f) => f.severity === s).length} ${s}`).join(', ')}).`,
         ...findings.map((f) => `  ${f.severity.padEnd(8)} ${f.where}  (${f.reviewer})`),
         `${unresolved.length} unresolved thread(s); ${blocking.length} Blocking or Major open${blocking.length ? `: ${blocking.map((b) => b.where).join(', ')}` : ''}.`,
         blocking.length ? 'Fix or answer each Blocking/Major finding (reply in its thread and resolve it), push, and run hh dev review again.' : 'Review bar met (no Blocking or Major open).',
+        ...(recorded ? [recorded] : []),
       ].join('\n'),
     };
   },

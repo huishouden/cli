@@ -5,6 +5,7 @@ import { markerLine, parseMarker } from '../src/lib/evidence';
 import { classify, isProduction, screenshotCommand } from '../src/lib/screenshots';
 import { chooseMode } from '../src/commands/dev/evidence';
 import { openBlocking, parseRollup } from '../src/commands/dev/review';
+import { judgeReview, markFromReview, parseReviewMarker, reviewMarkBody, type Comment } from '../src/lib/review';
 import { fixProfile, profileDrift } from '../src/commands/ops/profile-check';
 import { isDocsOnly } from '../src/lib/repo';
 
@@ -120,4 +121,61 @@ test('screenshot variants: a failure is excused only by scenes another size has'
   expect(classify(files, { 'phone-light': 1, 'tablet-light': 0 })).toEqual({ failed: [], missing: { 'phone-light': ['b'], 'tablet-light': [] } });
   expect(classify(files, { 'phone-light': 0, 'tablet-light': 1 }).failed).toEqual(['tablet-light']);
   expect(classify({ x: [], y: [] }, { x: 1, y: 1 }).failed).toEqual(['x', 'y']);
+});
+
+const HEAD = 'a1'.repeat(20);
+const OLD = 'b2'.repeat(20);
+const mark = (sha: string, o: Partial<{ blocking: number; major: number; minor: number }> = {}) => reviewMarkBody({ sha, blocking: 0, major: 0, minor: 2, run: 'cr-77', ...o });
+const base = { head: HEAD, reviewer: 'piekstra-dev', author: 'piekstra', review: null, threads: () => [] };
+const said = (login: string, body: string): Comment => ({ login, body });
+
+test('review marker round trip and the human line', () => {
+  const body = mark(HEAD);
+  expect(parseReviewMarker(body)).toEqual({ sha: HEAD, blocking: 0, major: 0, minor: 2, run: 'cr-77' });
+  expect(body).toContain(`hh review: ${HEAD} — 0 Blocking, 0 Major (2 Minor) · cr run cr-77`);
+});
+
+test('ready: a reviewer review of head with nothing Blocking or Major open passes', () => {
+  expect(judgeReview({ ...base, review: { findings: [{ severity: 'Minor', where: 'a.ts:1', reviewer: 'x' }] }, comments: [] }).ok).toBe(true);
+  const open = judgeReview({ ...base, review: { findings: [{ severity: 'Major', where: 'a.ts:1', reviewer: 'x' }] }, comments: [] });
+  expect(open.ok).toBe(false);
+  expect(open.detail).toContain('a.ts:1');
+});
+
+test('ready: the marker for head from the PR author or the reviewer passes with no reviewer review', () => {
+  expect(judgeReview({ ...base, comments: [said('piekstra', mark(HEAD))] }).ok).toBe(true);
+  expect(judgeReview({ ...base, comments: [said('piekstra-dev', mark(HEAD))] }).ok).toBe(true);
+});
+
+test('ready: a marker for an older commit is refused once the head moved', () => {
+  const v = judgeReview({ ...base, comments: [said('piekstra', mark(OLD))] });
+  expect(v.ok).toBe(false);
+  expect(v.detail).toContain(`last hh review is of ${OLD.slice(0, 7)}`);
+});
+
+test('ready: a marker from anyone else is ignored', () => {
+  const v = judgeReview({ ...base, comments: [said('mallory', mark(HEAD))] });
+  expect(v.ok).toBe(false);
+  expect(v.detail).toContain('no piekstra-dev review or hh review marker');
+  expect(judgeReview({ ...base, author: undefined, comments: [said('piekstra', mark(HEAD))] }).ok).toBe(false);
+});
+
+test('ready: a marker reporting Blocking or Major does not pass', () => {
+  expect(judgeReview({ ...base, comments: [said('piekstra', mark(HEAD, { major: 1 }))] }).ok).toBe(false);
+  expect(judgeReview({ ...base, comments: [said('piekstra', mark(HEAD, { blocking: 1 }))] }).ok).toBe(false);
+});
+
+test('ready: the reviewer\'s open Major is not overridden by a clean marker', () => {
+  const review = { findings: [{ severity: 'Major', where: 'a.ts:1', reviewer: 'x' }] };
+  expect(judgeReview({ ...base, review, comments: [said('piekstra', mark(HEAD))] }).ok).toBe(false);
+});
+
+test('review mark counts Blocking and Major still open, Minor as reported', () => {
+  const findings = [
+    { severity: 'Major', where: 'a.ts:1', reviewer: 'x' },
+    { severity: 'Major', where: 'b.ts:2', reviewer: 'x' },
+    { severity: 'Minor', where: 'c.ts:3', reviewer: 'x' },
+  ];
+  const threads = [{ id: 't', path: 'a.ts', line: 1, resolved: true }, { id: 'u', path: 'b.ts', line: 2, resolved: false }];
+  expect(markFromReview(HEAD, findings, threads, 'r1')).toEqual({ sha: HEAD, blocking: 0, major: 1, minor: 1, run: 'r1' });
 });
