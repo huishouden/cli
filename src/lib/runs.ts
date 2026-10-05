@@ -68,6 +68,9 @@ async function common(repo: Repo, steps: Steps) {
   const cwd = repo.root;
   await steps.cmd('install', ['bun', 'install', '--frozen-lockfile'], { cwd });
   if (hasScript(repo, 'lint')) await steps.cmd('lint', ['bun', 'run', 'lint'], { cwd });
+  // The kit's checks are for an app's UI and writes (pwa-kit STANDARD.md); a Worker or a command
+  // line that imports the kit's server-safe modules has no app to check.
+  const isApp = existsSync(join(cwd, 'index.html')) || existsSync(join(cwd, 'vite.config.ts'));
   for (const [name, bin] of [
     ['design check', 'pwa-design-check'],
     ['write check', 'pwa-write-check'],
@@ -75,7 +78,7 @@ async function common(repo: Repo, steps: Steps) {
     ['i18n check', 'pwa-i18n-check'],
     ['bandwidth check', 'pwa-bandwidth-check'],
   ])
-    if (existsSync(join(cwd, 'node_modules/.bin', bin))) await steps.cmd(name, ['bunx', bin], { cwd });
+    if (isApp && existsSync(join(cwd, 'node_modules/.bin', bin))) await steps.cmd(name, ['bunx', bin], { cwd });
   if (hasScript(repo, 'test')) await steps.cmd('unit tests', ['bun', 'run', 'test'], { cwd });
 }
 
