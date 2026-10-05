@@ -81,15 +81,45 @@ export function parseRollup(md: string): Finding[] {
   return out;
 }
 
-export function unresolvedThreads(repo: Repo, pr: number): { id: string; path: string; severity: string }[] {
+export interface Thread {
+  id: string;
+  path: string;
+  line: number | null;
+  resolved: boolean;
+}
+
+export function reviewThreads(repo: Repo, pr: number): Thread[] {
   const [owner, name] = repo.slug.split('/');
-  const q = `query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100){nodes{id isResolved path comments(first:1){nodes{body}}}}}}}`;
+  const q = `query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100){nodes{id isResolved path line originalLine}}}}}`;
   const r = sh(['gh', 'api', 'graphql', '-f', `query=${q}`, '-F', `o=${owner}`, '-F', `n=${name}`, '-F', `p=${pr}`]);
   if (r.code !== 0) return [];
-  const nodes = JSON.parse(r.stdout).data.repository.pullRequest.reviewThreads.nodes as { id: string; isResolved: boolean; path: string; comments: { nodes: { body: string }[] } }[];
-  return nodes
-    .filter((n) => !n.isResolved)
-    .map((n) => ({ id: n.id, path: n.path, severity: /(Blocking|Major|Minor|Nit)\b/.exec(n.comments.nodes[0]?.body ?? '')?.[1] ?? '?' }));
+  const nodes = JSON.parse(r.stdout).data.repository.pullRequest.reviewThreads.nodes as { id: string; isResolved: boolean; path: string; line: number | null; originalLine: number | null }[];
+  return nodes.map((n) => ({ id: n.id, path: n.path, line: n.line ?? n.originalLine, resolved: n.isResolved }));
+}
+
+/** The reviewer account's latest review of the head commit, as findings (its body is cr's rollup). */
+export function headReview(repo: Repo, pr: number, head: string, reviewer: string): { findings: Finding[] } | null {
+  const r = sh(['gh', 'api', `repos/${repo.slug}/pulls/${pr}/reviews`, '--paginate', '--jq', `[.[] | select(.user.login == "${reviewer}" and .commit_id == "${head}") | .body]`]);
+  if (r.code !== 0) return null;
+  const bodies = r.stdout.trim().split('\n').filter(Boolean).flatMap((l) => JSON.parse(l) as string[]);
+  const body = bodies.at(-1);
+  return body === undefined ? null : { findings: parseRollup(body) };
+}
+
+/**
+ * Blocking and Major findings still open: a finding is closed when a resolved thread sits on its
+ * line (or, without a line, its file) and no unresolved one does; a finding with no thread at all
+ * (posted in the review body only) stays open until a later review no longer reports it.
+ */
+export function openBlocking(findings: Finding[], threads: Thread[]): Finding[] {
+  return findings
+    .filter((f) => f.severity === 'Blocking' || f.severity === 'Major')
+    .filter((f) => {
+      const [path, line] = f.where.split(':');
+      const here = threads.filter((t) => t.path === path && (!line || t.line === Number(line)));
+      const onFile = here.length ? here : threads.filter((t) => t.path === path);
+      return !onFile.length || onFile.some((t) => !t.resolved);
+    });
 }
 
 register({
@@ -129,17 +159,18 @@ register({
       /* cr printed no JSON */
     }
     const findings = parseRollup(rollup);
-    const threads = unresolvedThreads(repo, pr.number);
-    const blocking = threads.filter((t) => t.severity === 'Blocking' || t.severity === 'Major');
+    const threads = reviewThreads(repo, pr.number);
+    const unresolved = threads.filter((t) => !t.resolved);
+    const blocking = openBlocking(findings, threads);
     const ok = code === 0 && blocking.length === 0;
     return {
       ok,
-      data: { pr: pr.number, head: pr.headRefOid, crExit: code, reviewers: agents, freshSession: fresh, findings, unresolved: threads, barMet: blocking.length === 0 },
+      data: { pr: pr.number, head: pr.headRefOid, crExit: code, reviewers: agents, freshSession: fresh, findings, unresolved, openBlocking: blocking, barMet: blocking.length === 0 },
       text: [
         `cr review of #${pr.number} at ${pr.headRefOid.slice(0, 7)}: ${findings.length} findings (${['Blocking', 'Major', 'Minor', 'Nit'].map((s) => `${findings.filter((f) => f.severity === s).length} ${s}`).join(', ')}).`,
         ...findings.map((f) => `  ${f.severity.padEnd(8)} ${f.where}  (${f.reviewer})`),
-        threads.length ? `${threads.length} unresolved thread(s); ${blocking.length} Blocking or Major.` : 'No unresolved threads.',
-        blocking.length ? 'Fix or answer each Blocking/Major thread, resolve it, push, and run hh dev review again.' : 'Review bar met (no Blocking or Major open).',
+        `${unresolved.length} unresolved thread(s); ${blocking.length} Blocking or Major open${blocking.length ? `: ${blocking.map((b) => b.where).join(', ')}` : ''}.`,
+        blocking.length ? 'Fix or answer each Blocking/Major finding (reply in its thread and resolve it), push, and run hh dev review again.' : 'Review bar met (no Blocking or Major open).',
       ].join('\n'),
     };
   },

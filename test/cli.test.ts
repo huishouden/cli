@@ -4,7 +4,7 @@ import { bump, changelogSection, hasSection, insertSection, levelFor, parseCommi
 import { markerLine, parseMarker } from '../src/lib/evidence';
 import { isProduction, screenshotCommand } from '../src/lib/screenshots';
 import { chooseMode } from '../src/commands/dev/evidence';
-import { parseRollup } from '../src/commands/dev/review';
+import { openBlocking, parseRollup } from '../src/commands/dev/review';
 import { fixProfile, profileDrift } from '../src/commands/ops/profile-check';
 import { isDocsOnly } from '../src/lib/repo';
 
@@ -98,4 +98,19 @@ test('profile drift and fix', () => {
   const fixed = fixProfile(profile, drift, apps, repos);
   expect(fixed).toContain('| [Health](https://github.com/huishouden/health) | Medicines and care |\n\n## Beyond');
   expect(fixed).toContain('| [Calendar](https://github.com/huishouden/calendar) | feeds |\n\n## License');
+});
+
+test('open Blocking/Major: resolved threads close a finding, body-only findings stay open', () => {
+  const f = [
+    { severity: 'Major', where: 'a.ts:9', reviewer: 'x' },
+    { severity: 'Blocking', where: 'b.ts:4', reviewer: 'x' },
+    { severity: 'Major', where: 'CHANGELOG.md:10', reviewer: 'x' },
+    { severity: 'Minor', where: 'c.ts:1', reviewer: 'x' },
+  ];
+  const threads = [
+    { id: '1', path: 'a.ts', line: 9, resolved: true },
+    { id: '2', path: 'b.ts', line: 4, resolved: false },
+    { id: '3', path: 'c.ts', line: 1, resolved: false },
+  ];
+  expect(openBlocking(f, threads).map((x) => x.where)).toEqual(['b.ts:4', 'CHANGELOG.md:10']);
 });

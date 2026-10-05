@@ -33,6 +33,7 @@ export function evidenceDir(repo: Repo, sha: string) {
   return dir;
 }
 
+
 export function save(repo: Repo, e: Evidence) {
   writeFileSync(join(evidenceDir(repo, e.sha), 'result.json'), JSON.stringify(e, null, 2));
 }

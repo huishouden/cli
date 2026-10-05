@@ -1,6 +1,6 @@
 // The repo hh runs in: its GitHub name, branch, head, package.json, the app's path on the suite's
 // site, its pull request and the files it changes against main.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sh, shOk } from './sh';
 
@@ -26,6 +26,7 @@ export function repoAt(cwd: string): Repo {
   const pkg = existsSync(pkgPath) ? JSON.parse(readFileSync(pkgPath, 'utf8')) : {};
   const ci = join(root, '.github/workflows/ci.yml');
   const appPath = existsSync(ci) ? /^\s+base:\s*(\/[^\s#]*)/m.exec(readFileSync(ci, 'utf8'))?.[1] : undefined;
+  ignoreHh(root);
   const base = sh(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: root }).stdout.trim().replace(/^origin\//, '') || 'main';
   return {
     root,
@@ -62,7 +63,7 @@ export interface PullRequest {
 }
 
 export function currentPr(repo: Repo, number?: string): PullRequest | null {
-  const r = sh(['gh', 'pr', 'view', ...(number ? [number] : []), '-R', repo.slug, '--json', 'number,url,isDraft,headRefOid,baseRefName,title'], { cwd: repo.root });
+  const r = sh(['gh', 'pr', 'view', number ?? repo.branch, '-R', repo.slug, '--json', 'number,url,isDraft,headRefOid,baseRefName,title'], { cwd: repo.root });
   if (r.code !== 0) return null;
   return JSON.parse(r.stdout) as PullRequest;
 }
@@ -78,3 +79,14 @@ export function baseVersion(repo: Repo): string | undefined {
 }
 
 export const hasScript = (repo: Repo, name: string) => !!repo.pkg.scripts?.[name];
+
+/** .hh/ is hh's scratch space: kept out of git without touching the repo's .gitignore. */
+export function ignoreHh(root: string) {
+  const exclude = join(root, '.git', 'info', 'exclude');
+  if (!existsSync(join(root, '.git'))) return;
+  const text = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
+  if (!/^\.hh\/?$/m.test(text)) {
+    mkdirSync(join(root, '.git', 'info'), { recursive: true });
+    writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.hh/\n`);
+  }
+}
