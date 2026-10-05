@@ -8,6 +8,7 @@
 
 ### Bug Fixes
 
+* **dev:** the kit's app checks run only in app repos ([9217769](https://github.com/huishouden/cli/commit/92177690b91a3f13ce1fe800d72584d90bde561a))
 * review findings for hh login, data and ops ([5c824d7](https://github.com/huishouden/cli/commit/5c824d7f9dec4630b65b32fe99ec77c8de1f6da7))
 
 ### Documentation
