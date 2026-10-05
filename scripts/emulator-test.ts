@@ -5,6 +5,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
+import { useJava } from '../src/lib/java';
 
 const free = () =>
   new Promise<number>((resolve) => {
@@ -14,6 +15,11 @@ const free = () =>
     });
   });
 
+const java = useJava();
+if (!java.ok) {
+  console.error(java.message);
+  process.exit(1);
+}
 const dir = join(import.meta.dir, '..', 'test', '.emulator');
 mkdirSync(dir, { recursive: true });
 async function rulesText(): Promise<string> {

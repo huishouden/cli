@@ -13,7 +13,7 @@ bunx github:huishouden/cli#v1.1.1 dev ready   # no install, with an exact tag (b
 Needs [Bun](https://bun.sh). `hh login` and `hh data` need nothing else. The developer and
 operations commands also need [gh](https://cli.github.com) signed in, and for some of them
 `firebase-tools` signed in to the staging project, `gcloud` (auth domains, staging signed-in tests),
-Java 21 (emulator tests) and [cr](https://github.com/piekstra/codereview-cli) (reviews).
+Java 21+ (emulator tests; hh finds one through JAVA_HOME, PATH, `/usr/libexec/java_home` or Homebrew even when the default `java` is older) and [cr](https://github.com/piekstra/codereview-cli) (reviews).
 
 ## The pull request lifecycle
 

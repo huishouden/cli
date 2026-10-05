@@ -6,10 +6,14 @@ import { hasScript, scratchDir, type Repo } from './repo';
 import { takeScreenshots, type Shots } from './screenshots';
 import { has, sh, shOk, stream } from './sh';
 import { Steps } from './steps';
+import { useJava } from './java';
 import { sweepStaging } from './staging';
 
 export const STAGING_PROJECT = 'huishouden-staging';
-const FIREBASE_TOOLS = 'firebase-tools@14.27.0';
+// One firebase-tools for every emulator run and deploy hh makes: 15.32.1+ (14.x's Firestore emulator
+// 1.19.8 can miss a document's creation for a listener attached before it exists), and never an
+// older one beside it, which would replace the shared cached emulator jars under ~/.cache/firebase.
+export const FIREBASE_TOOLS = 'firebase-tools@15.32.1';
 
 /** The repo's STAGING_* variables as the build's VITE_* (public values; the staging project only). */
 export function stagingEnv(repo: Repo): { env: Record<string, string>; site?: string } {
@@ -66,6 +70,8 @@ export interface RunResult {
 
 async function common(repo: Repo, steps: Steps) {
   const cwd = repo.root;
+  // A repo's own tests may start the emulators (the connector's do): give them Java 21+ too.
+  useJava();
   if (existsSync(join(cwd, 'package.json'))) await steps.cmd('install', ['bun', 'install', '--frozen-lockfile'], { cwd });
   else steps.skip('install', 'no package.json');
   if (hasScript(repo, 'lint')) await steps.cmd('lint', ['bun', 'run', 'lint'], { cwd });
@@ -142,8 +148,11 @@ function kitHasEmulatorPorts(repo: Repo): boolean {
 
 async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
   if (!opts.emulators || !hasScript(repo, 'e2e:emulator')) return;
-  if (!has('java')) {
-    steps.skip('emulator tests', 'Java is not installed (brew install temurin@21)');
+  const java = useJava();
+  if (!java.ok) {
+    await steps.run('emulator tests', async () => {
+      throw new Error(java.message);
+    });
     return;
   }
   const dir = scratchDir(repo, 'emulators');

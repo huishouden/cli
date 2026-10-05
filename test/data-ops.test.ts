@@ -123,3 +123,20 @@ describe('hh ops', () => {
     expect(provisionLines(log)).toEqual(['Browser app Huishouden Pet: exists']);
   });
 });
+
+describe('Java for the emulators', () => {
+  test('reads the major version in both numbering schemes', async () => {
+    const { javaMajor } = await import('../src/lib/java');
+    expect(javaMajor('openjdk version "11.0.12" 2021-07-20 LTS')).toBe(11);
+    expect(javaMajor('java version "1.8.0_292"')).toBe(8);
+    expect(javaMajor('openjdk version "21.0.4" 2024-07-16')).toBe(21);
+    expect(javaMajor('nonsense')).toBeNull();
+  });
+
+  test('picks the first 21+ candidate, past an older default', async () => {
+    const { findJava } = await import('../src/lib/java');
+    const versions: Record<string, number> = { '/usr/bin/java': 11, '/opt/homebrew/opt/openjdk@21/bin/java': 21, '/opt/homebrew/opt/openjdk@26/bin/java': 26 };
+    expect(findJava(Object.keys(versions), (j) => versions[j] ?? null)).toEqual({ bin: '/opt/homebrew/opt/openjdk@21/bin', home: '/opt/homebrew/opt/openjdk@21', major: 21 });
+    expect(findJava(['/usr/bin/java'], () => 11)).toBeNull();
+  });
+});
