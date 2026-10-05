@@ -4,8 +4,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { flagString, register } from '../../registry';
-import { currentPr, repoAt, type Repo } from '../../lib/repo';
-import { has, sh, shOk, stream } from '../../lib/sh';
+import { currentPr, repoAt, scratchDir } from '../../lib/repo';
+import { has, sh } from '../../lib/sh';
+import { openBlocking, parseRollup, reviewThreads } from '../../lib/review';
+export { openBlocking, parseRollup } from '../../lib/review';
 
 const PROFILE = 'reviewer';
 const REVIEWERS_REPO = 'huishouden/cr-reviewers';
@@ -63,65 +65,6 @@ async function withLock<T>(log: (l: string) => void, fn: () => Promise<T>): Prom
   }
 }
 
-export interface Finding {
-  severity: string;
-  where: string;
-  reviewer: string;
-}
-
-export function parseRollup(md: string): Finding[] {
-  const out: Finding[] = [];
-  let reviewer = '';
-  for (const line of md.split('\n')) {
-    const r = /<summary><strong>([^<(]+?)\s*\(/.exec(line);
-    if (r) reviewer = r[1].trim();
-    const f = /^### (Blocking|Major|Minor|Nit|Info)\b[^`]*`([^`]+)`/.exec(line);
-    if (f) out.push({ severity: f[1], where: f[2], reviewer });
-  }
-  return out;
-}
-
-export interface Thread {
-  id: string;
-  path: string;
-  line: number | null;
-  resolved: boolean;
-}
-
-export function reviewThreads(repo: Repo, pr: number): Thread[] {
-  const [owner, name] = repo.slug.split('/');
-  const q = `query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100){nodes{id isResolved path line originalLine}}}}}`;
-  const r = sh(['gh', 'api', 'graphql', '-f', `query=${q}`, '-F', `o=${owner}`, '-F', `n=${name}`, '-F', `p=${pr}`]);
-  if (r.code !== 0) return [];
-  const nodes = JSON.parse(r.stdout).data.repository.pullRequest.reviewThreads.nodes as { id: string; isResolved: boolean; path: string; line: number | null; originalLine: number | null }[];
-  return nodes.map((n) => ({ id: n.id, path: n.path, line: n.line ?? n.originalLine, resolved: n.isResolved }));
-}
-
-/** The reviewer account's latest review of the head commit, as findings (its body is cr's rollup). */
-export function headReview(repo: Repo, pr: number, head: string, reviewer: string): { findings: Finding[] } | null {
-  const r = sh(['gh', 'api', `repos/${repo.slug}/pulls/${pr}/reviews`, '--paginate', '--jq', `[.[] | select(.user.login == "${reviewer}" and .commit_id == "${head}") | .body]`]);
-  if (r.code !== 0) return null;
-  const bodies = r.stdout.trim().split('\n').filter(Boolean).flatMap((l) => JSON.parse(l) as string[]);
-  const body = bodies.at(-1);
-  return body === undefined ? null : { findings: parseRollup(body) };
-}
-
-/**
- * Blocking and Major findings still open: a finding is closed when a resolved thread sits on its
- * line (or, without a line, its file) and no unresolved one does; a finding with no thread at all
- * (posted in the review body only) stays open until a later review no longer reports it.
- */
-export function openBlocking(findings: Finding[], threads: Thread[]): Finding[] {
-  return findings
-    .filter((f) => f.severity === 'Blocking' || f.severity === 'Major')
-    .filter((f) => {
-      const [path, line] = f.where.split(':');
-      const here = threads.filter((t) => t.path === path && (!line || t.line === Number(line)));
-      const onFile = here.length ? here : threads.filter((t) => t.path === path);
-      return !onFile.length || onFile.some((t) => !t.resolved);
-    });
-}
-
 register({
   group: 'dev',
   name: 'review',
@@ -133,8 +76,7 @@ register({
     const pr = currentPr(repo, flagString(ctx.flags, 'pr'));
     if (!pr) return { ok: false, data: { error: 'no pull request' }, text: 'No PR for this branch (gh pr create --draft).' };
     const agents = ensureReviewers(ctx.log);
-    const out = join(repo.root, '.hh', `cr-${pr.number}.json`);
-    mkdirSync(join(repo.root, '.hh'), { recursive: true });
+    const out = join(scratchDir(repo), `cr-${pr.number}.json`);
     // A PR's first review after the org's reviewers changed starts a fresh session; follow-ups reuse
     // the saved cohort. --max-agents 8: the default 5 can leave out docs-sync.
     const seenFile = join(repo.root, '.hh', `cr-${pr.number}.reviewers`);

@@ -1,8 +1,8 @@
 // The checks behind `hh dev verify` (local) and `hh dev evidence` (local or staging).
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { compare } from './semver';
 import { join } from 'node:path';
-import type { Repo } from './repo';
-import { hasScript } from './repo';
+import { hasScript, scratchDir, type Repo } from './repo';
 import { takeScreenshots, type Shots } from './screenshots';
 import { has, sh, shOk, stream } from './sh';
 import { Steps } from './steps';
@@ -127,7 +127,12 @@ function freePort(): number {
 }
 
 /** Kits from 0.93.0 take the emulator ports from the environment (emulator-port). */
-const kitHasEmulatorPorts = (repo: Repo) => existsSync(join(repo.root, 'node_modules/@huishouden/pwa-kit/src/emulator-port.ts'));
+function kitHasEmulatorPorts(repo: Repo): boolean {
+  const pkg = join(repo.root, 'node_modules/@huishouden/pwa-kit/package.json');
+  if (!existsSync(pkg)) return false;
+  const v = JSON.parse(readFileSync(pkg, 'utf8')).version as string | undefined;
+  return !!v && compare(v, '0.93.0') >= 0;
+}
 
 async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
   if (!opts.emulators || !hasScript(repo, 'e2e:emulator')) return;
@@ -135,8 +140,7 @@ async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
     steps.skip('emulator tests', 'Java is not installed (brew install temurin@21)');
     return;
   }
-  const dir = join(repo.root, '.hh', 'emulators');
-  mkdirSync(dir, { recursive: true });
+  const dir = scratchDir(repo, 'emulators');
   await steps.run('emulator tests (household rules from huishouden/rules main)', async () => {
     const rules = await fetch('https://raw.githubusercontent.com/huishouden/rules/main/firestore.rules');
     if (!rules.ok) throw new Error(`rules: ${rules.status}`);
@@ -168,7 +172,8 @@ export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult>
   await common(repo, steps);
   // Built against the staging project, so a screenshot's page can never reach real data.
   const { env } = stagingEnv(repo);
-  await steps.cmd('build', ['bun', 'run', 'build'], { cwd: repo.root, env });
+  if (hasScript(repo, 'build')) await steps.cmd('build', ['bun', 'run', 'build'], { cwd: repo.root, env });
+  else steps.skip('build', 'no build script');
   let shots: Shots | undefined;
   if (steps.ok && opts.screenshots && hasScript(repo, 'screenshots')) {
     const pv = await preview(repo);
@@ -191,7 +196,7 @@ export async function runStaging(repo: Repo, opts: RunOptions): Promise<RunResul
   const url = `https://${site}.web.app${repo.appPath}`;
   await common(repo, steps);
   await steps.cmd('build (staging project)', ['bun', 'run', 'build'], { cwd: repo.root, env });
-  const out = join(repo.root, '.hh', 'site-out');
+  const out = scratchDir(repo, 'site-out');
   await steps.run(`deploy to ${site} (${STAGING_PROJECT})`, async () => {
     rmSync(out, { recursive: true, force: true });
     const token = shOk(['gh', 'auth', 'token']);

@@ -7,7 +7,7 @@ import { latestEvidence } from '../../lib/evidence';
 import { baseVersion, changedFiles, currentPr, fetchBase, isDocsOnly, repoAt } from '../../lib/repo';
 import { sh, shOk } from '../../lib/sh';
 import { compare, hasSection } from '../../lib/semver';
-import { headReview, openBlocking, reviewThreads } from './review';
+import { headReview, openBlocking, reviewThreads } from '../../lib/review';
 
 export interface Check {
   name: string;

@@ -20,13 +20,12 @@ export interface Repo {
 export function repoAt(cwd: string): Repo {
   const root = shOk(['git', 'rev-parse', '--show-toplevel'], { cwd });
   const url = shOk(['git', 'remote', 'get-url', 'origin'], { cwd: root });
-  const m = /github\.com[:/]([^/]+)\/([^/.]+?)(\.git)?$/.exec(url);
+  const m = /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/([^/]+?)(\.git)?\/?$/.exec(url);
   if (!m) throw new Error(`origin is not a GitHub repo: ${url}`);
   const pkgPath = join(root, 'package.json');
   const pkg = existsSync(pkgPath) ? JSON.parse(readFileSync(pkgPath, 'utf8')) : {};
   const ci = join(root, '.github/workflows/ci.yml');
   const appPath = existsSync(ci) ? /^\s+base:\s*(\/[^\s#]*)/m.exec(readFileSync(ci, 'utf8'))?.[1] : undefined;
-  ignoreHh(root);
   const base = sh(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: root }).stdout.trim().replace(/^origin\//, '') || 'main';
   return {
     root,
@@ -80,13 +79,19 @@ export function baseVersion(repo: Repo): string | undefined {
 
 export const hasScript = (repo: Repo, name: string) => !!repo.pkg.scripts?.[name];
 
-/** .hh/ is hh's scratch space: kept out of git without touching the repo's .gitignore. */
-export function ignoreHh(root: string) {
-  const exclude = join(root, '.git', 'info', 'exclude');
-  if (!existsSync(join(root, '.git'))) return;
-  const text = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
-  if (!/^\.hh\/?$/m.test(text)) {
-    mkdirSync(join(root, '.git', 'info'), { recursive: true });
-    writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.hh/\n`);
+/** hh's scratch space, `.hh/` in the repo, kept out of git through info/exclude (worktrees too),
+ * never through the repo's .gitignore. */
+export function scratchDir(repo: Repo, ...parts: string[]): string {
+  const dir = join(repo.root, '.hh', ...parts);
+  mkdirSync(dir, { recursive: true });
+  const rel = sh(['git', 'rev-parse', '--git-path', 'info/exclude'], { cwd: repo.root }).stdout.trim();
+  if (rel) {
+    const exclude = rel.startsWith('/') ? rel : join(repo.root, rel);
+    const text = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
+    if (!/^\.hh\/?$/m.test(text)) {
+      mkdirSync(join(exclude, '..'), { recursive: true });
+      writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.hh/\n`);
+    }
   }
+  return dir;
 }
