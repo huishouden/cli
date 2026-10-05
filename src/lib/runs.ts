@@ -66,7 +66,8 @@ export interface RunResult {
 
 async function common(repo: Repo, steps: Steps) {
   const cwd = repo.root;
-  await steps.cmd('install', ['bun', 'install', '--frozen-lockfile'], { cwd });
+  if (existsSync(join(cwd, 'package.json'))) await steps.cmd('install', ['bun', 'install', '--frozen-lockfile'], { cwd });
+  else steps.skip('install', 'no package.json');
   if (hasScript(repo, 'lint')) await steps.cmd('lint', ['bun', 'run', 'lint'], { cwd });
   // The kit's checks are for an app's UI and writes (pwa-kit STANDARD.md); a Worker or a command
   // line that imports the kit's server-safe modules has no app to check.

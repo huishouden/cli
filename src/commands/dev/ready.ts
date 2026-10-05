@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { flagString, register } from '../../registry';
 import { latestEvidence } from '../../lib/evidence';
-import { baseVersion, changedFiles, currentPr, fetchBase, isDocsOnly, repoAt } from '../../lib/repo';
+import { baseVersion, changedFiles, currentPr, fetchBase, isDocsOnly, repoAt, versionFile } from '../../lib/repo';
 import { shOk } from '../../lib/sh';
 import { compare, hasSection } from '../../lib/semver';
 import { headReview, openBlocking, reviewThreads } from '../../lib/review';
@@ -51,15 +51,15 @@ register({
     const files = changedFiles(repo);
     const code = files.filter((f) => !isDocsOnly(f));
     const from = baseVersion(repo);
-    const pkgPath = join(repo.root, 'package.json');
-    const to = existsSync(pkgPath) ? JSON.parse(readFileSync(pkgPath, 'utf8')).version : undefined;
+    const file = versionFile(repo);
+    const to = file ? JSON.parse(readFileSync(join(repo.root, file), 'utf8')).version : undefined;
     if (!code.length) checks.push({ name: 'version', ok: true, detail: 'docs only: no bump needed' });
-    else if (!from || !to) checks.push({ name: 'version', ok: false, detail: 'no package.json version' });
+    else if (!from || !to) checks.push({ name: 'version', ok: false, detail: 'no version (package.json or .claude-plugin/plugin.json)' });
     else {
       const bumped = compare(to, from) > 0;
       const cl = existsSync(join(repo.root, 'CHANGELOG.md')) ? readFileSync(join(repo.root, 'CHANGELOG.md'), 'utf8') : '';
       const section = hasSection(cl, to);
-      checks.push({ name: 'version', ok: bumped && section, detail: !bumped ? `package.json is ${to}, main has ${from}: bump it (hh dev release)` : !section ? `CHANGELOG.md has no ${to} section (hh dev release)` : `${from} → ${to}, CHANGELOG.md section present` });
+      checks.push({ name: 'version', ok: bumped && section, detail: !bumped ? `${file} is ${to}, main has ${from}: bump it (hh dev release)` : !section ? `CHANGELOG.md has no ${to} section (hh dev release)` : `${from} → ${to}, CHANGELOG.md section present` });
     }
 
     const ok = checks.every((c) => c.ok);

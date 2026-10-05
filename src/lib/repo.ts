@@ -67,8 +67,19 @@ export function currentPr(repo: Repo, number?: string): PullRequest | null {
   return JSON.parse(r.stdout) as PullRequest;
 }
 
+/**
+ * Where the version lives: package.json, or for a repo without one (a Claude Code plugin
+ * marketplace) its one tracked `.claude-plugin/plugin.json`.
+ */
+export function versionFile(repo: Pick<Repo, 'root'>): string | undefined {
+  if (existsSync(join(repo.root, 'package.json'))) return 'package.json';
+  const plugins = sh(['git', 'ls-files', '*/.claude-plugin/plugin.json', '.claude-plugin/plugin.json'], { cwd: repo.root }).stdout.split('\n').filter(Boolean);
+  return plugins.length === 1 ? plugins[0] : undefined;
+}
+
 export function baseVersion(repo: Repo): string | undefined {
-  const r = sh(['git', 'show', `origin/${repo.base}:package.json`], { cwd: repo.root });
+  const file = versionFile(repo) ?? 'package.json';
+  const r = sh(['git', 'show', `origin/${repo.base}:${file}`], { cwd: repo.root });
   if (r.code !== 0) return undefined;
   try {
     return JSON.parse(r.stdout).version;
