@@ -159,13 +159,13 @@ export function encryptedFile(dir: string, passphrase = process.env.HH_PASSPHRAS
       }
     },
     delete(account) {
+      if (!existsSync(file(account))) return false;
       try {
-        if (!existsSync(file(account))) return false;
         rmSync(file(account));
-        return true;
       } catch {
-        return false;
+        throw new CredentialUnreadable('unavailable', file(account));
       }
+      return true;
     },
   };
 }

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLI_TOKEN_PATH, isLoopbackRedirect, storeCliHandoff, takeCliHandoff, type HandoffStore } from '@huishouden/pwa-kit/signin-handoff';
@@ -219,6 +219,17 @@ describe('the OS keychains, with a stand-in runner', () => {
     const locked = keychainStore((() => ({ code: 36, stdout: '', stderr: 'locked' })) as never);
     expect(deleteCredential('staging', [locked, file])).toEqual({ removed: ['encrypted file'], failed: ['macOS Keychain'] });
     expect(keychainStore((() => ({ code: 44, stdout: '', stderr: '' })) as never).delete('staging')).toBe(false);
+    // A file that can't be removed is reported, not taken for "none there".
+    const stuck = mkdtempSync(join(tmpdir(), 'hh-ro-'));
+    const roFile = encryptedFile(stuck, '');
+    roFile.save('staging', 'secret-value');
+    chmodSync(stuck, 0o500);
+    try {
+      expect(deleteCredential('staging', [roFile])).toEqual({ removed: [], failed: ['encrypted file'] });
+    } finally {
+      chmodSync(stuck, 0o700);
+      rmSync(stuck, { recursive: true, force: true });
+    }
     rmSync(dir2, { recursive: true, force: true });
   });
 
