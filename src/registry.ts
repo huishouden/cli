@@ -30,13 +30,17 @@ export interface Command {
   name: string;
   summary: string;
   usage: string;
+  /** More for `--help`: each argument and what it takes. */
+  details?: string;
+  /** Flags that take a value (`--name value`); the rest are switches. */
+  valued?: readonly string[];
   run(ctx: Ctx): Promise<Result>;
 }
 
 export const GROUPS: Record<string, string> = {
   dev: 'Changing a repo: verify, evidence, release, ready, review, bump-kit',
-  ops: 'Operating the suite: profile check, staging cleanup (more to come: auth domains, OAuth origins, secrets, New Relic, roles)',
-  data: "The household's data as the signed-in person, under the household's rules (to come; `hh login` first)",
+  ops: 'Operating the suite: auth domains, OAuth origins and redirect URIs, secrets, monitoring, household roles, profile check, staging cleanup',
+  data: "The household's data as the signed-in person, under the household's rules (`hh login` first); the AI connector's tools",
   account: 'Signing in: login, logout, whoami',
 };
 
@@ -50,6 +54,16 @@ export function register(command: Command) {
 
 export function find(group: string, name: string | undefined): Command | undefined {
   return name ? commands.get(`${group} ${name}`) : undefined;
+}
+
+/**
+ * The command for `argv` after the group: two words first ("groceries add"), then one. Returns the
+ * name it matched and the arguments after it.
+ */
+export function resolve(group: string, argv: readonly string[]): { command?: Command; name?: string; rest: string[] } {
+  const [a, b, ...more] = argv;
+  if (a && b && commands.has(`${group} ${a} ${b}`)) return { command: commands.get(`${group} ${a} ${b}`), name: `${a} ${b}`, rest: more };
+  return { command: a ? commands.get(`${group} ${a}`) : undefined, name: a, rest: argv.slice(1) as string[] };
 }
 
 export function list(group?: string): Command[] {

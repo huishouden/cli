@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
+import './lib/utc';
 // hh: the Huishouden command line. `hh <group> <command>`; `hh login|logout|whoami` for the account.
 // Every command takes --json (one JSON document on stdout, progress on stderr).
-import { find, GROUPS, list, parseArgs, type Ctx } from './registry';
+import { GROUPS, list, parseArgs, resolve, type Ctx } from './registry';
 import './commands/dev';
 import './commands/ops';
 import './commands/data';
@@ -33,19 +34,19 @@ async function main(argv: string[]): Promise<number> {
     console.log(pkg.version);
     return 0;
   }
-  const [group, name, tail] = ACCOUNT.has(first) ? ['account', first, [second, ...rest].filter((x) => x !== undefined)] : [first, second, rest];
+  const group = ACCOUNT.has(first) ? 'account' : first;
   if (!GROUPS[group]) {
     console.error(`unknown group: ${group}\n\n${help()}`);
     return 2;
   }
-  const command = find(group, name);
+  const { command, name, rest: tail } = resolve(group, ACCOUNT.has(first) ? [first, ...[second, ...rest].filter((x) => x !== undefined)] : [second, ...rest].filter((x) => x !== undefined));
   if (!command || name === '--help') {
     console.log(help(group));
     return name && name !== '--help' ? 2 : 0;
   }
-  const { args, flags } = parseArgs(tail as string[], VALUED);
+  const { args, flags } = parseArgs(tail, new Set([...VALUED, ...(command.valued ?? [])]));
   if (flags.help) {
-    console.log(`${command.usage}\n  ${command.summary}`);
+    console.log(`${command.usage}\n  ${command.summary}${command.details ? `\n\n${command.details}` : ''}`);
     return 0;
   }
   const json = !!flags.json;

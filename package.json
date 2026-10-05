@@ -10,10 +10,15 @@
   },
   "scripts": {
     "lint": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test test/",
+    "test:emulator": "bun scripts/emulator-test.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@huishouden/pwa-kit": "github:huishouden/pwa-kit#feat/household-tools-cli-signin",
+    "zod": "^4.6.5"
   }
 }
