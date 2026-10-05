@@ -6,6 +6,10 @@
 
 * **dev:** review bar from the review's findings; free emulator ports; .hh excluded ([7548111](https://github.com/huishouden/cli/commit/7548111ccdbfc438d1432b0d33a5900535e58b32))
 
+### Bug Fixes
+
+* **dev:** review findings: worktree-safe .hh, line-exact review bar, review logic in lib, kit capability by version ([b603395](https://github.com/huishouden/cli/commit/b6033953b240bdac6c29ba1974f8fbe82844a779))
+
 ## 1.0.0 (2026-10-05)
 
 ### Features
