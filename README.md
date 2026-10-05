@@ -109,6 +109,7 @@ not marked as the assistant's: they look as if you made them in the app.
 | `contacts search <query>`, `contacts add <name>` | The household's contacts |
 | `health people`, `health medicines <person>`, `health history <person>`, `health due [person]` | Health, for the people you care for |
 | `health appointments [person]`, `health dose <person> <medicine>`, `health add <person> <name>`, `health update <person> <medicine>`, `health doctor-list <person>` | Visits; logging doses (with Health's guards: `--confirm` after a warning), medicines, the doctor's list |
+| `health conditions [person] [--specialty neurology]`, `health condition add <person> <name> [--icd10 M54.12]` | Conditions by medical area (admins and member carers only); adding one, filed under its code's area unless `--specialty` says otherwise |
 
 Every other argument is a flag named after the tool's (`--dose-time 08:00`, `--no-reminders`,
 `--times 08:00,20:00`); `hh data <command> --help` lists them. `--household <id or name>` picks a
