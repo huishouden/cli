@@ -66,7 +66,7 @@ async function main(argv: string[]): Promise<number> {
   const ctx: Ctx = { args, flags, json, cwd: process.cwd(), log: (l) => (json ? console.error(l) : console.log(l)) };
   try {
     const r = await command.run(ctx);
-    if (json) console.log(JSON.stringify({ ok: r.ok, command: `${group} ${name}`, ...(r.data as object) }, null, 2));
+    if (json) console.log(JSON.stringify({ ...(r.data as object), ok: r.ok, command: `${group} ${name}` }, null, 2));
     else if (r.text) console.log(r.text);
     return r.ok ? 0 : 1;
   } catch (e) {

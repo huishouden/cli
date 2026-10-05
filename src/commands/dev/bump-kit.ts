@@ -1,11 +1,11 @@
 // hh dev bump-kit: @huishouden/pwa-kit to its latest tag, and the reusable workflow refs
 // (huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z) with it, then lint and unit tests. Run it whenever
 // you touch a repo (hh dev verify|evidence|review|ready do it for you as a commit); nothing bumps dependencies on a schedule.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { register } from '../../registry';
 import { hasScript, repoAt } from '../../lib/repo';
-import { stream } from '../../lib/sh';
+import { sh, stream } from '../../lib/sh';
 import { latestKitTag } from '../../lib/kit';
 import { kitHasTarball, kitPin, kitSpec, writeKitBump } from '../../lib/kitbump';
 import { isExactTag } from '../../lib/update';
@@ -37,7 +37,11 @@ register({
       if (step !== 'install' && !hasScript(repo, step)) continue;
       const code = await stream(cmd, { cwd: repo.root, json: ctx.json });
       steps.push({ step, code });
-      if (code !== 0) break;
+      if (code !== 0) {
+        // A bump whose install failed is undone; a failed lint or test leaves it for you to fix.
+        if (step === 'install') sh(['git', 'checkout', '--', ...['package.json', 'bun.lock', '.github/workflows'].filter((p) => existsSync(join(repo.root, p)))], { cwd: repo.root });
+        break;
+      }
     }
     const ok = steps.every((s) => s.code === 0);
     return {
