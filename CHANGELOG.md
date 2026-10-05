@@ -4,6 +4,7 @@
 
 ### Features
 
+* **data:** health appointments (kit 0.98.0); every kit tool must have a command ([20e07fb](https://github.com/huishouden/cli/commit/20e07fbe1c117bce1f89ea8ac42d4b8ef9608d6f))
 * hh login (loopback + PKCE), hh data (the connector's tools), hh ops auth-domains, oauth-check, secret set, monitoring, roles ([1507347](https://github.com/huishouden/cli/commit/1507347ad9dae81291c6f4c3d89f45ecb240dfeb))
 
 ### Bug Fixes
