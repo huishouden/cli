@@ -23,7 +23,7 @@ async function household(session: Session, wanted?: string) {
 }
 
 const notSignedIn = (e: unknown) => {
-  if (e instanceof NotSignedIn) return { ok: false, data: { error: 'not_signed_in', message: e.message }, text: e.message };
+  if (e instanceof NotSignedIn) return { ok: false, data: { error: 'not_signed_in', reason: e.reason, message: e.message }, text: e.message };
   throw e;
 };
 

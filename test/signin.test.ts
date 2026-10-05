@@ -151,7 +151,9 @@ describe('where the sign-in is kept', () => {
     storeSignIn('production', credential, [file]);
     expect(await Bun.file(join(dir, 'b', 'sign-in-production.enc')).text()).not.toContain(REFRESH);
     expect(() => loadSignIn('production', [encryptedFile(join(dir, 'b'), 'wrong')])).toThrow("HH_PASSPHRASE doesn't open it");
-    expect(() => loadSignIn('production', [encryptedFile(join(dir, 'b'), '')])).toThrow("HH_PASSPHRASE doesn't open it");
+    expect(() => loadSignIn('production', [encryptedFile(join(dir, 'b'), '')])).toThrow('set HH_PASSPHRASE to open it');
+    storeSignIn('staging', credential, [encryptedFile(join(dir, 'b'), '')]);
+    expect(() => loadSignIn('staging', [encryptedFile(join(dir, 'b'), 'now set')])).toThrow('unset HH_PASSPHRASE');
     expect(loadSignIn('production', [encryptedFile(join(dir, 'b'), 'correct horse')])!.credential.email).toBe(WHO.email);
   });
 
@@ -196,6 +198,12 @@ describe('the OS keychains, with a stand-in runner', () => {
     expect(r.calls[0]).toEqual({ cmd: ['secret-tool', 'store', '--label=Huishouden hh', 'service', 'huishouden-hh', 'account', 'staging'], input: secret });
     expect(store.read('staging')).toBe(secret);
     expect(store.delete('staging')).toBe(true);
-    expect(libsecretStore(recorder(1).run).read('staging')).toBeNull();
+    expect(libsecretStore((() => ({ code: 1, stdout: '', stderr: '' })) as never).read('staging')).toBeNull();
+    expect(() => libsecretStore((() => ({ code: 1, stdout: '', stderr: 'Cannot autolaunch D-Bus' })) as never).read('staging')).toThrow('could not be read');
+  });
+
+  test('macOS: only "not found" (44) is absent; a locked or refused keychain says so', () => {
+    expect(keychainStore((() => ({ code: 44, stdout: '', stderr: '' })) as never).read('production')).toBeNull();
+    expect(() => keychainStore((() => ({ code: 36, stdout: '', stderr: 'User interaction is not allowed.' })) as never).read('production')).toThrow(CredentialUnreadable);
   });
 });

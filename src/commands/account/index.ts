@@ -49,7 +49,7 @@ register({
       return { ok: true, data: { site: site.name, email: credential.email, uid: credential.uid, project: credential.projectId, store: store.name }, text: `${credential.email} on ${site.name} (${credential.projectId}), kept in the ${store.name}` };
     } catch (e) {
       if (!(e instanceof NotSignedIn)) throw e;
-      return { ok: false, data: { site: site.name, signedIn: false, error: e.message }, text: e.message };
+      return { ok: false, data: { site: site.name, signedIn: false, reason: e.reason, error: e.message }, text: e.message };
     }
   },
 });

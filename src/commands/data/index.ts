@@ -94,7 +94,7 @@ for (const c of DATA_COMMANDS) {
       try {
         session = await openSession(site);
       } catch (e) {
-        if (e instanceof NotSignedIn) return { ok: false, data: { tool: tool.name, error: 'not_signed_in', message: e.message }, text: e.message };
+        if (e instanceof NotSignedIn) return { ok: false, data: { tool: tool.name, error: 'not_signed_in', reason: e.reason, message: e.message }, text: e.message };
         throw e;
       }
       const call = await runAs(session, tool, parsed.args);

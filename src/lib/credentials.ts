@@ -20,17 +20,22 @@ export interface CredentialStore {
 }
 
 /** A sign-in is stored but can't be opened: the wrong or a missing HH_PASSPHRASE, a missing key file, a damaged file. */
+export type UnreadableReason = 'passphrase_wrong' | 'passphrase_missing' | 'passphrase_unexpected' | 'missing_key' | 'corrupt' | 'unavailable';
+
 export class CredentialUnreadable extends Error {
   constructor(
-    readonly reason: 'passphrase' | 'missing_key' | 'corrupt',
+    readonly reason: UnreadableReason,
     readonly where: string,
   ) {
     super(
-      reason === 'passphrase'
-        ? `a sign-in is stored in ${where}, but HH_PASSPHRASE doesn't open it (set the one it was saved with, or hh login again)`
-        : reason === 'missing_key'
-          ? `a sign-in is stored in ${where}, but its key file is gone: hh login again`
-          : `the sign-in in ${where} is damaged: hh login again`,
+      {
+        passphrase_wrong: `a sign-in is stored in ${where}, but HH_PASSPHRASE doesn't open it: set the one it was saved with, or hh login again`,
+        passphrase_missing: `a sign-in is stored in ${where} with a passphrase: set HH_PASSPHRASE to open it, or hh login again`,
+        passphrase_unexpected: `a sign-in is stored in ${where} without a passphrase: unset HH_PASSPHRASE to open it, or hh login again`,
+        missing_key: `a sign-in is stored in ${where}, but its key file is gone: hh login again`,
+        corrupt: `the sign-in in ${where} is damaged: hh login again`,
+        unavailable: `the ${where} could not be read (locked, or access was refused): unlock it and try again`,
+      }[reason],
     );
   }
 }
@@ -58,7 +63,10 @@ export function keychainStore(run: Runner = sh): CredentialStore {
     },
     read(account) {
       const r = run(['security', 'find-generic-password', '-s', SERVICE, '-a', account, '-w']);
-      return r.code === 0 ? r.stdout.trim() || null : null;
+      if (r.code === 0) return r.stdout.trim() || null;
+      // 44 is errSecItemNotFound; anything else (locked, access refused, no UI over SSH) is not "absent".
+      if (r.code === 44) return null;
+      throw new CredentialUnreadable('unavailable', 'macOS Keychain');
     },
     delete(account) {
       return run(['security', 'delete-generic-password', '-s', SERVICE, '-a', account]).code === 0;
@@ -75,7 +83,10 @@ export function libsecretStore(run: Runner = sh): CredentialStore {
     },
     read(account) {
       const r = run(['secret-tool', 'lookup', 'service', SERVICE, 'account', account]);
-      return r.code === 0 ? r.stdout.trim() || null : null;
+      if (r.code === 0) return r.stdout.trim() || null;
+      // secret-tool says nothing and exits 1 when there is no such secret; a message means it couldn't look.
+      if (r.code === 1 && !r.stderr.trim()) return null;
+      throw new CredentialUnreadable('unavailable', 'libsecret keyring');
     },
     delete(account) {
       return run(['secret-tool', 'clear', 'service', SERVICE, 'account', account]).code === 0;
@@ -126,7 +137,8 @@ export function encryptedFile(dir: string, passphrase = process.env.HH_PASSPHRAS
         throw new CredentialUnreadable('corrupt', file(account));
       }
       // Sealed with a passphrase and none (or the key file and a passphrase now): say so, don't pretend nothing is there.
-      if ((s.kdf === 'scrypt') !== !!passphrase) throw new CredentialUnreadable('passphrase', file(account));
+      if (s.kdf === 'scrypt' && !passphrase) throw new CredentialUnreadable('passphrase_missing', file(account));
+      if (s.kdf !== 'scrypt' && passphrase) throw new CredentialUnreadable('passphrase_unexpected', file(account));
       const key = keyFor(Buffer.from(s.salt, 'base64'), false);
       if (!key) throw new CredentialUnreadable('missing_key', file(account));
       try {
@@ -134,7 +146,7 @@ export function encryptedFile(dir: string, passphrase = process.env.HH_PASSPHRAS
         decipher.setAuthTag(Buffer.from(s.tag, 'base64'));
         return Buffer.concat([decipher.update(Buffer.from(s.data, 'base64')), decipher.final()]).toString('utf8');
       } catch {
-        throw new CredentialUnreadable(passphrase ? 'passphrase' : 'corrupt', file(account));
+        throw new CredentialUnreadable(passphrase ? 'passphrase_wrong' : 'corrupt', file(account));
       }
     },
     delete(account) {

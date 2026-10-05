@@ -176,7 +176,15 @@ export function authOptions(c: Credential): AuthRestOptions {
   };
 }
 
-export class NotSignedIn extends Error {}
+export class NotSignedIn extends Error {
+  /** Why, for `--json`: none stored, the sign-in ended, or a stored one that can't be opened (CredentialUnreadable's reason). */
+  constructor(
+    message: string,
+    readonly reason: string = 'none',
+  ) {
+    super(message);
+  }
+}
 
 /** A fresh ID token for the signed-in person, or why there is none (in words to act on). */
 export async function signedIn(site: Site, stores?: CredentialStore[]): Promise<{ credential: Credential; token: string; store: CredentialStore }> {
@@ -185,7 +193,7 @@ export async function signedIn(site: Site, stores?: CredentialStore[]): Promise<
   try {
     loaded = loadSignIn(site.name, stores);
   } catch (e) {
-    if (e instanceof CredentialUnreadable) throw new NotSignedIn(e.message);
+    if (e instanceof CredentialUnreadable) throw new NotSignedIn(e.message, e.reason);
     throw e;
   }
   if (!loaded) throw new NotSignedIn(`not signed in to ${site.name}: ${again}`);
@@ -193,7 +201,7 @@ export async function signedIn(site: Site, stores?: CredentialStore[]): Promise<
     const { token } = await exchangeRefreshToken(authOptions(loaded.credential), loaded.credential.refreshToken);
     return { ...loaded, token };
   } catch (e) {
-    if (e instanceof FirebaseAuthError && e.kind !== 'unavailable') throw new NotSignedIn(`the sign-in has ended (${e.kind}): ${again}`);
+    if (e instanceof FirebaseAuthError && e.kind !== 'unavailable') throw new NotSignedIn(`the sign-in has ended (${e.kind}): ${again}`, 'ended');
     throw e;
   }
 }
