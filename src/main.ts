@@ -8,6 +8,7 @@ import './commands/ops';
 import './commands/data';
 import './commands/account';
 import pkg from '../package.json';
+import { dailyUpdateWarning } from './lib/update';
 
 
 function help(group?: string): string {
@@ -50,6 +51,10 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const json = !!flags.json;
+  if (name !== 'self-update') {
+    const warning = dailyUpdateWarning(pkg.version);
+    if (warning) console.error(warning);
+  }
   const ctx: Ctx = { args, flags, json, cwd: process.cwd(), log: (l) => (json ? console.error(l) : console.log(l)) };
   try {
     const r = await command.run(ctx);

@@ -1,7 +1,8 @@
 name: ci
 
-# main only (pwa-kit STANDARD.md "CI/CD"): tests, then the package.json version tagged once, with v1
-# moved to it (`bunx github:huishouden/cli#v1`). Pull requests are verified by their author.
+# main only (pwa-kit STANDARD.md "CI/CD"): tests, then the package.json version tagged once as
+# v<version> with its GitHub release (`hh self-update` installs the latest). No tag moves.
+# Pull requests are verified by their author.
 on:
   push:
     branches: [main]
@@ -38,17 +39,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Tag a new version and move its major tag
+      - name: Tag the version and create its release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           v=$(jq -r .version package.json)
-          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then echo "v$v already tagged"; exit 0; fi
-          major="v${v%%.*}"
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v$v" -m "v$v"
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -f -a "$major" -m "$major -> v$v"
-          git push origin "v$v"
-          git push -f origin "$major"
+          # Exact tags only: v<version> is created once and never moved. Each step is skipped when
+          # already done, so a failed release is created on the next run without touching the tag.
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+            echo "v$v already tagged"
+          else
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v$v" -m "v$v"
+            git push origin "v$v"
+          fi
+          if gh release view "v$v" >/dev/null 2>&1; then echo "release v$v exists"; exit 0; fi
           V="$v" python3 -c 'import os,re,sys; v=re.escape(os.environ["V"]); out=[]; on=False
           for l in open("CHANGELOG.md"):
               if re.match(r"^##+ \[?v?"+v+r"([\] (]|$)", l): on=True; continue
