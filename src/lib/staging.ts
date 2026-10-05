@@ -1,9 +1,8 @@
 // Staging housekeeping with a staging token from the developer's gcloud login.
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { latestKitTag } from './kit';
-import { kitHasTarball, kitTarballUrl } from './kitbump';
+import { kitHasTarball, kitTarballUrl, latestKitTag } from './kit';
 import { sh, shOk, stream } from './sh';
 
 export const STAGING_SA = 'github-deploy@huishouden-staging.iam.gserviceaccount.com';
@@ -15,28 +14,44 @@ export function stagingToken(sa = process.env.HH_STAGING_SA || STAGING_SA): stri
   return r.stdout.trim();
 }
 
+export interface TrustedKitDeps {
+  latest?: () => string;
+  hasTarball?: (tag: string) => boolean;
+  run?: (cmd: string[], cwd?: string) => string;
+  /** Where kits are kept; default ~/.cache/hh. */
+  cacheRoot?: string;
+}
+
 /**
- * The kit at its latest release, cloned and installed under ~/.cache/hh: the token never reaches
- * code from the branch under test (its package.json, lockfile or postinstall scripts).
+ * The kit at its latest release, under ~/.cache/hh, so the staging token never reaches code from
+ * the branch under test (its package.json, lockfile or postinstall scripts). A release with a
+ * tarball is extracted and nothing is installed: the staging sweep imports only Node and the kit's
+ * own sources. An older release is cloned by its git tag and installed from its lockfile. A marker
+ * file records which source filled the directory; when GitHub cannot say whether the release has a
+ * tarball this throws rather than guess.
  */
-export function trustedKit(log: (l: string) => void): string {
-  const tag = latestKitTag();
-  const dir = join(homedir(), '.cache', 'hh', `pwa-kit-${tag}`);
-  if (!existsSync(join(dir, 'node_modules'))) {
-    log(`pwa-kit ${tag} → ${dir}`);
-    mkdirSync(join(dir, '..'), { recursive: true });
-    if (kitHasTarball(tag)) {
-      // Releases from 0.106 carry the package as a tarball and have no committed dist; scripts and src come with it.
-      mkdirSync(dir, { recursive: true });
-      const tgz = join(dir, '..', `pwa-kit-${tag}.tgz`);
-      shOk(['curl', '-fsSL', '--retry', '3', '-o', tgz, kitTarballUrl(tag)]);
-      shOk(['tar', '-xzf', tgz, '-C', dir, '--strip-components=1']);
-      shOk(['bun', 'install', '--production', '--ignore-scripts'], { cwd: dir });
-      return dir;
-    }
-    if (!existsSync(join(dir, '.git'))) shOk(['git', 'clone', '-q', '--depth', '1', '--branch', tag, 'https://github.com/huishouden/pwa-kit.git', dir]);
-    shOk(['bun', 'install', '--frozen-lockfile', '--ignore-scripts'], { cwd: dir });
+export function trustedKit(log: (l: string) => void, deps: TrustedKitDeps = {}): string {
+  const run = deps.run ?? ((cmd, cwd) => shOk(cmd, { cwd }));
+  const tag = (deps.latest ?? latestKitTag)();
+  const root = deps.cacheRoot ?? join(homedir(), '.cache', 'hh');
+  const dir = join(root, `pwa-kit-${tag}`);
+  const marker = join(dir, '.hh-source');
+  const have = existsSync(marker) ? readFileSync(marker, 'utf8').trim() : existsSync(join(dir, 'node_modules')) ? 'git' : '';
+  if (have) return dir;
+  const tarball = (deps.hasTarball ?? kitHasTarball)(tag);
+  log(`pwa-kit ${tag} (${tarball ? 'tarball' : 'git tag'}) → ${dir}`);
+  mkdirSync(root, { recursive: true });
+  if (tarball) {
+    mkdirSync(dir, { recursive: true });
+    const tgz = join(root, `pwa-kit-${tag}.tgz`);
+    run(['curl', '-fsSL', '--retry', '3', '-o', tgz, kitTarballUrl(tag)]);
+    run(['tar', '-xzf', tgz, '-C', dir, '--strip-components=1']);
+  } else {
+    if (!existsSync(join(dir, '.git'))) run(['git', 'clone', '-q', '--depth', '1', '--branch', tag, 'https://github.com/huishouden/pwa-kit.git', dir]);
+    run(['bun', 'install', '--frozen-lockfile', '--ignore-scripts'], dir);
   }
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(marker, tarball ? 'tarball' : 'git');
   return dir;
 }
 
@@ -44,4 +59,3 @@ export async function sweepStaging(log: (l: string) => void, json: boolean): Pro
   const kit = trustedKit(log);
   return stream(['bun', join(kit, 'scripts', 'staging.ts'), 'sweep'], { cwd: kit, json, env: { HH_STAGING_ACCESS_TOKEN: stagingToken() } });
 }
-

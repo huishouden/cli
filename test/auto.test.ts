@@ -3,8 +3,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { autoUpdate, isSourceCheckout, SIX_HOURS_MS } from '../src/lib/autoupdate';
+import { trustedKit } from '../src/lib/staging';
 import { kitOnlyDiff, newestFirst } from '../src/lib/carry';
-import { kitHasTarball, kitPin, kitSpec, kitSync } from '../src/lib/kitbump';
+import { kitHasTarball } from '../src/lib/kit';
+import { kitPin, kitSpec, kitSync } from '../src/lib/kitbump';
 import { repoAt } from '../src/lib/repo';
 import { defaultReviewer, judgeWithCarry, reviewCandidates, reviewMarkBody, type ReviewVerdict } from '../src/lib/review';
 import { readyFlow } from '../src/commands/dev/ready';
@@ -241,7 +243,8 @@ test('kit tarball is detected from the release assets', () => {
   fakeGh([{ match: 'release view v0.98.0 -R huishouden/pwa-kit', stdout: 'pwa-kit-0.98.0.tgz\n' }, { match: 'release view v0.97.0', stdout: 'other.txt\n' }, { match: 'release view v0.96.0', code: 1 }]);
   expect(kitHasTarball('v0.98.0')).toBe(true);
   expect(kitHasTarball('v0.97.0')).toBe(false);
-  expect(kitHasTarball('v0.96.0')).toBe(false);
+  // A release that does not exist is a plain no; any other failure is not a guess.
+  expect(() => kitHasTarball('v0.96.0')).toThrow('gh release view v0.96.0');
   expect(kitSpec('v0.98.0', true)).toContain('/download/v0.98.0/pwa-kit-0.98.0.tgz');
 });
 
@@ -524,4 +527,28 @@ test('carry: the lock must resolve the kit to the release package.json pins', ()
   dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
   const { root, base, head } = afterBump(() => {});
   expect(kitOnlyDiff(root, base, head, { tagCommit: () => undefined })).toMatchObject({ ok: false });
+});
+
+test('trusted kit: a tarball release is downloaded and extracted, nothing installed; an older one is cloned and installed from the lockfile', () => {
+  const ran: string[][] = [];
+  const run = (cmd: string[]) => (ran.push(cmd), '');
+  const base = { cacheRoot: join(dir, 'cache'), run, latest: () => 'v0.106.0' };
+  const a = trustedKit(log, { ...base, hasTarball: () => true });
+  expect(ran.map((c) => c[0])).toEqual(['curl', 'tar']);
+  expect(ran[0].at(-1)).toBe('https://github.com/huishouden/pwa-kit/releases/download/v0.106.0/pwa-kit-0.106.0.tgz');
+  expect(readFileSync(join(a, '.hh-source'), 'utf8')).toBe('tarball');
+  // A second call uses the cache.
+  trustedKit(log, { ...base, hasTarball: () => true });
+  expect(ran).toHaveLength(2);
+  ran.length = 0;
+  const b = trustedKit(log, { ...base, latest: () => 'v0.105.0', hasTarball: () => false });
+  expect(ran.map((c) => c.slice(0, 2).join(' '))).toEqual(['git clone', 'bun install']);
+  expect(ran[1]).toContain('--frozen-lockfile');
+  expect(readFileSync(join(b, '.hh-source'), 'utf8')).toBe('git');
+});
+
+test('trusted kit: a probe that cannot tell does not pick the clone path', () => {
+  const ran: string[][] = [];
+  expect(() => trustedKit(log, { cacheRoot: join(dir, 'cache'), latest: () => 'v0.106.0', run: (c) => (ran.push(c), ''), hasTarball: () => { throw new Error('gh: offline'); } })).toThrow('offline');
+  expect(ran).toEqual([]);
 });

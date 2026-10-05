@@ -1,7 +1,8 @@
 // Reusing a review or evidence across a kit bump. The bump moves the head but changes nothing the
 // reviewer or the tests judged, so a result for the earlier commit stands when everything that
 // changed since is the kit pin, bun.lock and the kit's workflow refs, and nothing else.
-import { PIN, WORKFLOW_REF, kitPin, kitSpec, kitTarballUrl } from './kitbump';
+import { kitTarballUrl } from './kit';
+import { PIN, WORKFLOW_REF, kitPin, kitSpec } from './kitbump';
 import { compare } from './semver';
 import { sh } from './sh';
 
