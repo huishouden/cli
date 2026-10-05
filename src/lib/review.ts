@@ -112,22 +112,25 @@ export interface ReviewVerdict {
 export function judgeReview(input: { head: string; reviewer: string; author: string | undefined; review: { findings: Finding[] } | null; threads: () => Thread[]; comments: Comment[] }): ReviewVerdict {
   const { head, reviewer, author, review, comments } = input;
   const short = head.slice(0, 7);
+  // A review by the reviewer account decides; the marker only stands in when there is none.
   if (review) {
     const open = openBlocking(review.findings, input.threads());
-    if (open.length === 0) return { ok: true, detail: `${reviewer} reviewed ${short}; no Blocking or Major open` };
+    return open.length === 0 ? { ok: true, detail: `${reviewer} reviewed ${short}; no Blocking or Major open` } : { ok: false, detail: `${open.length} Blocking/Major finding(s) open: ${open.map((f) => f.where).join(', ')}` };
   }
   const trusted = new Set([reviewer, ...(author ? [author] : [])]);
   const marks = comments.filter((c) => trusted.has(c.login)).flatMap((c) => parseReviewMarker(c.body) ?? []);
   const forHead = marks.filter((m) => m.sha === head);
   const clean = forHead.find((m) => m.blocking === 0 && m.major === 0);
   if (clean) return { ok: true, detail: `hh review marker for ${short}: 0 Blocking, 0 Major (${clean.minor} Minor), cr run ${clean.run}` };
-  if (review) {
-    const open = openBlocking(review.findings, input.threads());
-    return { ok: false, detail: `${open.length} Blocking/Major finding(s) open: ${open.map((f) => f.where).join(', ')}` };
-  }
   if (forHead.length) return { ok: false, detail: `hh review marker for ${short} reports ${forHead[0].blocking} Blocking, ${forHead[0].major} Major: fix them and run hh dev review` };
   const stale = marks.at(-1);
   return { ok: false, detail: stale ? `the last hh review is of ${stale.sha.slice(0, 7)}, head is ${short} (hh dev review)` : `no ${reviewer} review or hh review marker for ${short} (hh dev review)` };
+}
+
+/** The marker for a review of `head`: Blocking and Major are the ones still open after thread resolution, Minor all reported. */
+export function markFromReview(head: string, findings: Finding[], threads: Thread[], run: string): ReviewMark {
+  const open = openBlocking(findings, threads);
+  return { sha: head, blocking: open.filter((f) => f.severity === 'Blocking').length, major: open.filter((f) => f.severity === 'Major').length, minor: findings.filter((f) => f.severity === 'Minor').length, run };
 }
 
 export function issueComments(repo: Repo, pr: number): Comment[] {
@@ -136,23 +139,24 @@ export function issueComments(repo: Repo, pr: number): Comment[] {
   return r.stdout.trim().split('\n').filter(Boolean).flatMap((l) => JSON.parse(l) as Comment[]);
 }
 
-export function cacheDir(): string {
-  return process.env.HH_CACHE_DIR ?? join(homedir(), '.cache', 'hh');
+export function writeReviewRecord(dir: string, repoSlug: string, pr: number, m: ReviewMark, now: Date): string {
+  const d = join(dir, 'reviews', repoSlug.replace('/', '__'));
+  mkdirSync(d, { recursive: true });
+  const file = join(d, `${pr}-${m.sha}.json`);
+  writeFileSync(file, JSON.stringify({ ...m, repo: repoSlug, pr, at: now.toISOString() }, null, 2));
+  return file;
 }
 
-/** Writes the local record and posts (or updates in place) the PR's one hh-review comment as the signed-in gh user. */
-export function recordReview(repo: Repo, pr: number, m: ReviewMark): { file: string; comment: string } {
-  const dir = join(cacheDir(), 'reviews', repo.slug.replace('/', '__'));
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, `${pr}-${m.sha}.json`);
-  writeFileSync(file, JSON.stringify({ ...m, repo: repo.slug, pr, at: new Date().toISOString() }, null, 2));
-  const me = shOk(['gh', 'api', 'user', '--jq', '.login']);
-  const ids = shOk(['gh', 'api', `repos/${repo.slug}/issues/${pr}/comments`, '--paginate', '--jq', `.[] | select(.user.login == "${me}" and (.body | contains("<!-- ${REVIEW_MARKER} "))) | .id`]).split('\n').filter(Boolean);
-  const bodyFile = join(dir, `${pr}-${m.sha}.md`);
-  writeFileSync(bodyFile, reviewMarkBody(m));
-  if (ids.length) {
-    shOk(['gh', 'api', '-X', 'PATCH', `repos/${repo.slug}/issues/comments/${ids.at(-1)}`, '-F', `body=@${bodyFile}`, '--jq', '.html_url']);
-    return { file, comment: `updated comment ${ids.at(-1)}` };
-  }
-  return { file, comment: shOk(['gh', 'api', `repos/${repo.slug}/issues/${pr}/comments`, '-F', `body=@${bodyFile}`, '--jq', '.html_url']) };
+/** Posts the PR's one hh-review comment as the signed-in gh user, or updates their existing one in place. */
+export function upsertReviewComment(repo: Repo, pr: number, m: ReviewMark): { login: string; result: string } {
+  const login = shOk(['gh', 'api', 'user', '--jq', '.login']);
+  const ids = shOk(['gh', 'api', `repos/${repo.slug}/issues/${pr}/comments`, '--paginate', '--jq', `.[] | select(.user.login == "${login}" and (.body | contains("<!-- ${REVIEW_MARKER} "))) | .id`]).split('\n').filter(Boolean);
+  const body = reviewMarkBody(m);
+  const url = ids.length ? `repos/${repo.slug}/issues/comments/${ids.at(-1)}` : `repos/${repo.slug}/issues/${pr}/comments`;
+  const out = shOk(['gh', 'api', ...(ids.length ? ['-X', 'PATCH'] : []), url, '-F', 'body=@-', '--jq', '.html_url'], { input: body });
+  return { login, result: ids.length ? `updated comment ${ids.at(-1)}` : out };
+}
+
+export function cacheDir(): string {
+  return process.env.HH_CACHE_DIR ?? join(homedir(), '.cache', 'hh');
 }

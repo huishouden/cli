@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { flagString, register } from '../../registry';
 import { currentPr, repoAt, scratchDir } from '../../lib/repo';
 import { has, sh } from '../../lib/sh';
-import { headReview, openBlocking, parseRollup, recordReview, reviewThreads } from '../../lib/review';
+import { headReview, openBlocking, parseRollup, markFromReview, cacheDir, upsertReviewComment, writeReviewRecord, reviewThreads } from '../../lib/review';
 export { openBlocking, parseRollup } from '../../lib/review';
 
 const PROFILE = 'reviewer';
@@ -108,32 +108,35 @@ register({
       return c;
     });
     if (agents && code === 0) writeFileSync(seenFile, agents.sha);
-    let rollup = '';
+    // cr's result: the rollup and run id, or why there are none (nothing is recorded without a rollup).
+    let rollup: string | undefined;
+    let run = 'unknown';
+    let missing = 'cr printed no JSON';
     try {
       const j = JSON.parse(readFileSync(out, 'utf8'));
+      run = String(j.run?.run_id ?? 'unknown').replace(/[^\w.-]/g, '') || 'unknown';
       if (j.artifacts?.rollup_markdown && existsSync(j.artifacts.rollup_markdown)) rollup = readFileSync(j.artifacts.rollup_markdown, 'utf8');
+      else missing = 'cr wrote no rollup';
     } catch {
       /* cr printed no JSON */
     }
-    const findings = parseRollup(rollup);
+    const findings = parseRollup(rollup ?? '');
     const threads = reviewThreads(repo, pr.number);
     const unresolved = threads.filter((t) => !t.resolved);
     const blocking = openBlocking(findings, threads);
     const ok = code === 0 && blocking.length === 0;
-    // cr posts nothing as the reviewer on a clean review, so record the result for the head commit.
+    // cr posts nothing as the reviewer on a clean review, so record the result for the head commit,
+    // only from a rollup actually read.
     let recorded = '';
-    if (code === 0) {
-      let run = 'unknown';
+    if (code !== 0) recorded = '';
+    else if (rollup === undefined) recorded = `! not recorded: ${missing}`;
+    else {
       try {
-        const j = JSON.parse(readFileSync(out, 'utf8'));
-        run = String(j.run_id ?? j.run?.id ?? j.run?.run_id ?? j.id ?? 'unknown').replace(/[^\w.-]/g, '') || 'unknown';
-      } catch {
-        /* no JSON */
-      }
-      try {
-        const n = (s: string) => blocking.filter((f) => f.severity === s).length;
-        const r = recordReview(repo, pr.number, { sha: pr.headRefOid, blocking: n('Blocking'), major: n('Major'), minor: findings.filter((f) => f.severity === 'Minor').length, run });
-        recorded = `Recorded for ${pr.headRefOid.slice(0, 7)}: ${r.comment}; ${r.file}`;
+        const mark = markFromReview(pr.headRefOid, findings, threads, run);
+        const file = writeReviewRecord(cacheDir(), repo.slug, pr.number, mark, new Date());
+        const c = upsertReviewComment(repo, pr.number, mark);
+        const trusted = c.login === pr.author?.login || c.login === REVIEWER;
+        recorded = `Recorded for ${pr.headRefOid.slice(0, 7)}: ${c.result}; ${file}${trusted ? '' : `\n! ${c.login} is neither the PR author nor ${REVIEWER}: hh dev ready will ignore this marker`}`;
       } catch (e) {
         recorded = `! could not record the result: ${(e as Error).message.slice(0, 300)}`;
       }

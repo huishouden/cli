@@ -5,7 +5,7 @@ import { markerLine, parseMarker } from '../src/lib/evidence';
 import { classify, isProduction, screenshotCommand } from '../src/lib/screenshots';
 import { chooseMode } from '../src/commands/dev/evidence';
 import { openBlocking, parseRollup } from '../src/commands/dev/review';
-import { judgeReview, parseReviewMarker, reviewMarkBody, type Comment } from '../src/lib/review';
+import { judgeReview, markFromReview, parseReviewMarker, reviewMarkBody, type Comment } from '../src/lib/review';
 import { fixProfile, profileDrift } from '../src/commands/ops/profile-check';
 import { isDocsOnly } from '../src/lib/repo';
 
@@ -163,4 +163,19 @@ test('ready: a marker from anyone else is ignored', () => {
 test('ready: a marker reporting Blocking or Major does not pass', () => {
   expect(judgeReview({ ...base, comments: [said('piekstra', mark(HEAD, { major: 1 }))] }).ok).toBe(false);
   expect(judgeReview({ ...base, comments: [said('piekstra', mark(HEAD, { blocking: 1 }))] }).ok).toBe(false);
+});
+
+test('ready: the reviewer\'s open Major is not overridden by a clean marker', () => {
+  const review = { findings: [{ severity: 'Major', where: 'a.ts:1', reviewer: 'x' }] };
+  expect(judgeReview({ ...base, review, comments: [said('piekstra', mark(HEAD))] }).ok).toBe(false);
+});
+
+test('review mark counts Blocking and Major still open, Minor as reported', () => {
+  const findings = [
+    { severity: 'Major', where: 'a.ts:1', reviewer: 'x' },
+    { severity: 'Major', where: 'b.ts:2', reviewer: 'x' },
+    { severity: 'Minor', where: 'c.ts:3', reviewer: 'x' },
+  ];
+  const threads = [{ id: 't', path: 'a.ts', line: 1, resolved: true }, { id: 'u', path: 'b.ts', line: 2, resolved: false }];
+  expect(markFromReview(HEAD, findings, threads, 'r1')).toEqual({ sha: HEAD, blocking: 0, major: 1, minor: 1, run: 'r1' });
 });
