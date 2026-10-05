@@ -8,6 +8,7 @@
 
 ### Bug Fixes
 
+* drop unused imports kept alive with void ([f6445b7](https://github.com/huishouden/cli/commit/f6445b7159ace8a8cd81895638bff3eeb1ab6046))
 * **dev:** review findings: worktree-safe .hh, line-exact review bar, review logic in lib, kit capability by version ([b603395](https://github.com/huishouden/cli/commit/b6033953b240bdac6c29ba1974f8fbe82844a779))
 
 ## 1.0.0 (2026-10-05)
