@@ -108,6 +108,10 @@ export function kitSync(repo: Repo, opts: { skip?: boolean; push?: boolean; log:
     log(`! kit: latest release not found (${(e as Error).message.slice(0, 120)}); not bumping`);
     return { status: 'skipped', reason: 'latest kit release unknown' };
   }
+  if (!/^v\d+\.\d+\.\d+$/.test(to)) {
+    log(`! kit: latest tag ${JSON.stringify(to)} is not an exact vX.Y.Z; not bumping`);
+    return { status: 'skipped', reason: 'latest kit tag is not an exact vX.Y.Z' };
+  }
   const spec = kitSpec(to, (deps.hasTarball ?? kitHasTarball)(to));
   if (compare(pin.tag.slice(1), to.slice(1)) > 0) return { status: 'current', from: pin.tag, to };
   const behind = pin.spec !== spec || behindWorkflows(repo.root, to).length > 0;

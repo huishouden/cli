@@ -339,3 +339,10 @@ test('ready and review share one reviewer default (HH_REVIEWER)', () => {
   expect(defaultReviewer()).toBe('piekstra-dev');
   if (was) process.env.HH_REVIEWER = was;
 });
+
+test('kit sync: a latest tag that is not an exact vX.Y.Z is never written anywhere', () => {
+  const { root } = appRepo();
+  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0"\nx', hasTarball: () => false, install: fakeInstall });
+  expect(r.status).toBe('skipped');
+  expect(git(root, 'status', '--porcelain')).toBe('');
+});
