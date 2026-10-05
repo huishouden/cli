@@ -163,3 +163,15 @@ export function cacheDir(): string {
 
 /** The account whose review counts: HH_REVIEWER, else piekstra-dev. */
 export const defaultReviewer = (): string => process.env.HH_REVIEWER ?? 'piekstra-dev';
+
+/** Commits the reviewer account has reviewed on the PR, oldest first. */
+export function reviewedShas(repo: Repo, pr: number, reviewer: string): string[] {
+  const r = sh(['gh', 'api', `repos/${repo.slug}/pulls/${pr}/reviews`, '--paginate', '--jq', `[.[] | select(.user.login == "${reviewer}") | .commit_id]`]);
+  if (r.code !== 0) return [];
+  return r.stdout.trim().split('\n').filter(Boolean).flatMap((l) => JSON.parse(l) as string[]);
+}
+
+/** Commits with an hh-review marker from the PR author or the reviewer, oldest first. */
+export function markedShas(comments: Comment[], trusted: Set<string>): string[] {
+  return comments.filter((c) => trusted.has(c.login)).flatMap((c) => parseReviewMarker(c.body)?.sha ?? []);
+}

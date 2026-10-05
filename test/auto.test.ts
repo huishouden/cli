@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { autoUpdate, isSourceCheckout, SIX_HOURS_MS } from '../src/lib/autoupdate';
+import { kitOnlyDiff } from '../src/lib/carry';
 import { kitHasTarball, kitPin, kitSpec, kitSync } from '../src/lib/kitbump';
 import { repoAt } from '../src/lib/repo';
 import { defaultReviewer } from '../src/lib/review';
@@ -272,29 +273,61 @@ test('ready: needs no version bump or CHANGELOG; marks the draft ready when revi
   expect(calls().some((c) => c.startsWith('pr ready 3'))).toBe(true);
 });
 
-test('ready: a behind kit is bumped, pushed, and review and evidence are redone for the new head', async () => {
+const BEHIND = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall };
+
+/** Review and evidence recorded for `sha`; after a redo they are recorded for whatever the checkout's HEAD is. */
+function redoing(root: string, reran: string[]) {
+  const redo = (name: string) => async (c: Ctx) => {
+    reran.push(`${name}:${c.flags['no-bump-kit']}:${c.flags.local ?? ''}`);
+    writeFileSync(process.env.FAKE_GH_ROUTES!, JSON.stringify(readyRoutes(git(root, 'rev-parse', 'HEAD'))));
+    return { ok: true, data: {} };
+  };
+  return { review: redo('review'), evidence: redo('evidence') };
+}
+
+test('ready: a kit bump alone keeps the review and evidence of the earlier commit (no redo)', async () => {
   const { root, origin } = appRepo();
   const old = git(root, 'rev-parse', 'HEAD');
-  let newHead = '';
   const calls = fakeGh(readyRoutes(old));
   process.env.FAKE_GH_HEAD_CWD = root;
   const reran: string[] = [];
-  const redo = (name: string) => async (c: Ctx) => {
-    reran.push(`${name}:${c.flags['no-bump-kit']}:${c.flags.local ?? ''}`);
-    newHead = git(root, 'rev-parse', 'HEAD');
-    // The recorded review and evidence are now for the new head.
-    writeFileSync(process.env.FAKE_GH_ROUTES!, JSON.stringify(readyRoutes(newHead)));
-    return { ok: true, data: {} };
-  };
-  const kitDeps = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall };
-  const res = await readyFlow(ctxFor(root), { kit: kitDeps, review: redo('review'), evidence: redo('evidence') });
-  delete process.env.FAKE_GH_HEAD_CWD;
-  expect(reran).toEqual(['review:true:', 'evidence:true:true']);
-  expect(newHead).not.toBe(old);
-  expect(git(origin, 'rev-parse', 'feat')).toBe(newHead);
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, ...redoing(root, reran) });
+  expect(reran).toEqual([]);
+  expect(git(root, 'rev-parse', 'HEAD')).not.toBe(old);
+  expect(git(origin, 'rev-parse', 'feat')).toBe(git(root, 'rev-parse', 'HEAD'));
   expect(res.ok).toBe(true);
-  expect((res.data as { actions: string[] }).actions[0]).toContain('kit v0.94.0 → v0.98.0 committed and pushed');
+  const data = res.data as { actions: string[]; checks: { name: string; detail: string }[] };
+  expect(data.actions[0]).toContain('kit v0.94.0 → v0.98.0 committed and pushed');
+  expect(data.checks.map((c) => c.detail).join('\n')).toContain(`carried from ${old.slice(0, 7)}`);
   expect(calls().some((c) => c.startsWith('pr ready 3'))).toBe(true);
+});
+
+test('ready: the carry also covers a bump that an earlier command already committed', async () => {
+  const { root } = appRepo();
+  const old = git(root, 'rev-parse', 'HEAD');
+  kitSync(repoAt(root), { push: true, log }, BEHIND);
+  fakeGh(readyRoutes(old));
+  process.env.FAKE_GH_HEAD_CWD = root;
+  const reran: string[] = [];
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, ...redoing(root, reran) });
+  expect(reran).toEqual([]);
+  expect(res.ok).toBe(true);
+});
+
+test('ready: a change besides the kit since the review is not carried: review and evidence are redone', async () => {
+  const { root } = appRepo();
+  const old = git(root, 'rev-parse', 'HEAD');
+  writeFileSync(join(root, 'code.ts'), 'export const x = 1;\n');
+  git(root, 'add', '.');
+  git(root, 'commit', '-q', '-m', 'feat: code');
+  git(root, 'push', '-q');
+  fakeGh(readyRoutes(old));
+  process.env.FAKE_GH_HEAD_CWD = root;
+  const reran: string[] = [];
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, ...redoing(root, reran) });
+  expect(reran).toEqual(['review:true:', 'evidence:true:true']);
+  expect(res.ok).toBe(true);
+  expect(JSON.stringify(res.data)).not.toContain('carried');
 });
 
 test('ready: --dry-run and --no-bump-kit leave the branch alone', async () => {
@@ -347,4 +380,42 @@ test('kit sync: a latest tag that is not an exact vX.Y.Z is never written anywhe
   const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0"\nx', hasTarball: () => false, install: fakeInstall });
   expect(r.status).toBe('skipped');
   expect(git(root, 'status', '--porcelain')).toBe('');
+});
+
+// ---- the carry rule ----------------------------------------------------------------------------
+
+function afterBump(edit: (root: string) => void): { root: string; base: string; head: string } {
+  const { root } = appRepo();
+  const base = git(root, 'rev-parse', 'HEAD');
+  kitSync(repoAt(root), { log }, BEHIND);
+  edit(root);
+  return { root, base, head: git(root, 'rev-parse', 'HEAD') };
+}
+const commitAll = (root: string, msg = 'chore: x') => (git(root, 'add', '.'), git(root, 'commit', '-q', '-m', msg));
+
+test('carry: the kit commit alone is accepted', () => {
+  const { root, base, head } = afterBump(() => {});
+  expect(kitOnlyDiff(root, base, head)).toMatchObject({ ok: true });
+});
+
+test('carry: any other file, or another change in package.json or a workflow, is refused', () => {
+  const cases: [string, (r: string) => void][] = [
+    ['source file', (r) => (writeFileSync(join(r, 'a.ts'), 'x\n'), commitAll(r))],
+    ['another dependency', (r) => (writeFileSync(join(r, 'package.json'), readFileSync(join(r, 'package.json'), 'utf8').replace('"dependencies": {', '"dependencies": {\n    "left-pad": "1.0.0",')), commitAll(r))],
+    ['package version', (r) => (writeFileSync(join(r, 'package.json'), readFileSync(join(r, 'package.json'), 'utf8').replace('0.0.0', '9.9.9')), commitAll(r))],
+    ['workflow body', (r) => (writeFileSync(join(r, '.github/workflows/ci.yml'), readFileSync(join(r, '.github/workflows/ci.yml'), 'utf8') + '  extra: 1\n'), commitAll(r))],
+    ['new workflow', (r) => (writeFileSync(join(r, '.github/workflows/new.yml'), CI('v0.98.0')), commitAll(r))],
+    ['readme', (r) => (writeFileSync(join(r, 'README.md'), 'hi\n'), commitAll(r))],
+  ];
+  for (const [name, edit] of cases) {
+    dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
+    const { root, base, head } = afterBump(edit);
+    expect([name, kitOnlyDiff(root, base, head).ok]).toEqual([name, false]);
+  }
+});
+
+test('carry: nothing changed, or a commit that is not an ancestor, is refused', () => {
+  const { root, base, head } = afterBump(() => {});
+  expect(kitOnlyDiff(root, head, head).ok).toBe(false);
+  expect(kitOnlyDiff(root, head, base).ok).toBe(false);
 });

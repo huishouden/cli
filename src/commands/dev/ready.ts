@@ -1,12 +1,13 @@
 // hh dev ready: the draft becomes ready only when the review bar is met and the evidence for the head
 // commit passed. When the kit was behind, the bump is committed and pushed first and the review and
-// evidence are redone for the new head. No version: CI tags and releases on merge to main.
+// evidence are reused when only the kit moved since, else redone. No version: CI tags and releases on merge to main.
 import { find, flagString, register, type Ctx, type Result } from '../../registry';
 import { latestEvidence } from '../../lib/evidence';
 import { fetchBase } from '../../lib/repo';
-import { shOk } from '../../lib/sh';
+import { sh, shOk } from '../../lib/sh';
+import { kitOnlyDiff } from '../../lib/carry';
 import { prAfterSync, syncedRepo, type KitSyncDeps } from '../../lib/kitbump';
-import { defaultReviewer, headReview, issueComments, judgeReview, reviewThreads } from '../../lib/review';
+import { defaultReviewer, headReview, issueComments, judgeReview, markedShas, reviewedShas, reviewThreads } from '../../lib/review';
 
 export interface Check {
   name: string;
@@ -31,34 +32,62 @@ export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result>
   const pr = await prAfterSync(repo, kit, prFlag);
   if (!pr) return { ok: false, data: { error: 'no pull request' }, text: 'No PR for this branch.' };
   const head = pr.headRefOid;
-  const checks: Check[] = [];
   const actions: string[] = [];
-  if (kit.status === 'bumped') {
-    // The head moved: the review and evidence on the PR are for the old one. Redo both.
-    actions.push(`kit ${kit.from} → ${kit.to} committed and pushed`);
+  if (kit.status === 'bumped') actions.push(`kit ${kit.from} → ${kit.to} committed and pushed`);
+  const reviewer = flagString(ctx.flags, 'reviewer') ?? defaultReviewer();
+  const root = repo.root;
+  const fullSha = (sha: string) => sh(['git', 'rev-parse', '--verify', '-q', `${sha}^{commit}`], { cwd: root }).stdout.trim() || undefined;
+  const carriedNote = (sha: string, why: string) => `carried from ${sha.slice(0, 7)} to ${head.slice(0, 7)}: ${why}`;
+
+  const evaluate = (): Check[] => {
+    const comments = issueComments(repo, pr.number);
+    // 1. A review of the head commit: the reviewer account's with no Blocking or Major thread open, or
+    // (a clean review posts nothing as the reviewer) the hh-review marker for the head commit from
+    // the PR author or the reviewer. A review of an earlier commit stands when only the kit moved since.
+    const judge = (sha: string) => judgeReview({ head: sha, reviewer, author: pr.author?.login, review: headReview(repo, pr.number, sha, reviewer), threads: () => reviewThreads(repo, pr.number), comments });
+    let verdict = judge(head);
+    if (!verdict.ok) {
+      const trusted = new Set([reviewer, ...(pr.author ? [pr.author.login] : [])]);
+      const earlier = [...new Set([...reviewedShas(repo, pr.number, reviewer), ...markedShas(comments, trusted)])].reverse().filter((s) => s !== head);
+      for (const sha of earlier) {
+        const diff = kitOnlyDiff(root, sha, head);
+        if (!diff.ok) continue;
+        const v = judge(sha);
+        if (v.ok) {
+          verdict = { ok: true, detail: `${v.detail}; ${carriedNote(sha, diff.detail)}` };
+          break;
+        }
+      }
+    }
+    const checks: Check[] = [{ name: 'review', ok: verdict.ok, detail: verdict.detail }];
+
+    // 2. Evidence for the head commit, passed (or for an earlier one with only the kit moved since).
+    const ev = latestEvidence(repo, pr.number);
+    if (!ev) checks.push({ name: 'evidence', ok: false, detail: 'no evidence comment (hh dev evidence)' });
+    else if (head.startsWith(ev.sha)) checks.push({ name: 'evidence', ok: ev.ok, detail: ev.ok ? `${ev.mode} evidence passed: ${ev.url}` : `${ev.mode} evidence FAILED: ${ev.url}` });
+    else {
+      const full = fullSha(ev.sha);
+      const diff = ev.ok && full ? kitOnlyDiff(root, full, head) : undefined;
+      checks.push(diff?.ok ? { name: 'evidence', ok: true, detail: `${ev.mode} evidence passed: ${ev.url}; ${carriedNote(full!, diff.detail)}` } : { name: 'evidence', ok: false, detail: `evidence is for ${ev.sha.slice(0, 7)}, head is ${head.slice(0, 7)} (hh dev evidence)` });
+    }
+    return checks;
+  };
+
+  let checks = evaluate();
+  if (kit.status === 'bumped' && !dry && checks.some((c) => !c.ok)) {
+    // Something besides the kit moved since the last review or evidence: redo what is not current.
     const prior = latestEvidence(repo, pr.number);
     const sub = { ...ctx, flags: { ...ctx.flags, 'no-bump-kit': true } };
-    const review = await (deps.review ?? find('dev', 'review')!.run)(sub);
-    actions.push(`review of ${head.slice(0, 7)}: ${review.ok ? 'bar met' : 'bar not met'}`);
-    const evidence = await (deps.evidence ?? find('dev', 'evidence')!.run)({ ...sub, flags: { ...sub.flags, ...(prior ? { [prior.mode]: true } : {}) } });
-    actions.push(`evidence for ${head.slice(0, 7)}: ${evidence.ok ? 'passed' : 'FAILED'}`);
+    if (!checks[0].ok) {
+      const r = await (deps.review ?? find('dev', 'review')!.run)(sub);
+      actions.push(`review of ${head.slice(0, 7)}: ${r.ok ? 'bar met' : 'bar not met'}`);
+    }
+    if (!checks[1].ok) {
+      const r = await (deps.evidence ?? find('dev', 'evidence')!.run)({ ...sub, flags: { ...sub.flags, ...(prior ? { [prior.mode]: true } : {}) } });
+      actions.push(`evidence for ${head.slice(0, 7)}: ${r.ok ? 'passed' : 'FAILED'}`);
+    }
+    checks = evaluate();
   }
-
-  // 1. A review of the head commit: the reviewer account's with no Blocking or Major thread open, or
-  // (a clean review posts nothing as the reviewer) the hh-review marker for the head commit from
-  // the PR author or the reviewer.
-  const reviewer = flagString(ctx.flags, 'reviewer') ?? defaultReviewer();
-  const review = headReview(repo, pr.number, head, reviewer);
-  const verdict = judgeReview({ head, reviewer, author: pr.author?.login, review, threads: () => reviewThreads(repo, pr.number), comments: issueComments(repo, pr.number) });
-  checks.push({ name: 'review', ok: verdict.ok, detail: verdict.detail });
-
-  // 2. Evidence for the head commit, passed.
-  const ev = latestEvidence(repo, pr.number);
-  checks.push({
-    name: 'evidence',
-    ok: !!ev && head.startsWith(ev.sha) && ev.ok,
-    detail: !ev ? 'no evidence comment (hh dev evidence)' : !head.startsWith(ev.sha) ? `evidence is for ${ev.sha.slice(0, 7)}, head is ${head.slice(0, 7)} (hh dev evidence)` : ev.ok ? `${ev.mode} evidence passed: ${ev.url}` : `${ev.mode} evidence FAILED: ${ev.url}`,
-  });
 
   const ok = checks.every((c) => c.ok);
   let action = 'not marked ready';

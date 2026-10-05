@@ -9,8 +9,8 @@ import { compare } from './semver';
 import { sh } from './sh';
 import { latestKitTag } from './kit';
 
-const PIN = /("@huishouden\/pwa-kit"\s*:\s*")([^"]+)(")/;
-const WORKFLOW_REF = /(huishouden\/pwa-kit\/\.github\/workflows\/[\w.-]+\.ya?ml@)(\S+?)(?=["'\s]|$)/g;
+export const PIN = /("@huishouden\/pwa-kit"\s*:\s*")([^"]+)(")/;
+export const WORKFLOW_REF = /(huishouden\/pwa-kit\/\.github\/workflows\/[\w.-]+\.ya?ml@)(\S+?)(?=["'\s]|$)/g;
 const TAG = /v\d+\.\d+\.\d+/;
 
 /** The kit tag a package.json pins (`github:…#vX.Y.Z` or a release tarball URL), if it pins one. */
