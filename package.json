@@ -1,0 +1,19 @@
+{
+  "name": "@huishouden/cli",
+  "version": "1.0.0",
+  "private": true,
+  "description": "hh: the Huishouden command line (developer process, operations, household data)",
+  "license": "PolyForm-Shield-1.0.0",
+  "type": "module",
+  "bin": {
+    "hh": "./src/main.ts"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.0"
+  }
+}

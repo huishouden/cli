@@ -1,0 +1,58 @@
+name: ci
+
+# main only (pwa-kit STANDARD.md "CI/CD"): tests, then the package.json version tagged once, with v1
+# moved to it (`bunx github:huishouden/cli#v1`). Pull requests are verified by their author.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: huishouden/pwa-kit/actions/leak-scan@v0
+      - uses: huishouden/pwa-kit/actions/license-check@v0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run test
+      - run: ./src/main.ts --help
+
+  tag:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Tag a new version and move its major tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(jq -r .version package.json)
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then echo "v$v already tagged"; exit 0; fi
+          major="v${v%%.*}"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v$v" -m "v$v"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -f -a "$major" -m "$major -> v$v"
+          git push origin "v$v"
+          git push -f origin "$major"
+          V="$v" python3 -c 'import os,re,sys; v=re.escape(os.environ["V"]); out=[]; on=False
+          for l in open("CHANGELOG.md"):
+              if re.match(r"^##+ \[?v?"+v+r"([\] (]|$)", l): on=True; continue
+              if on and re.match(r"^#{1,2} ", l): break
+              if on: out.append(l)
+          sys.stdout.write("".join(out).strip()+"\n")' > "$RUNNER_TEMP/notes.md"
+          gh release create "v$v" --verify-tag --title "v$v" --notes-file "$RUNNER_TEMP/notes.md"
