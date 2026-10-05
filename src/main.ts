@@ -8,6 +8,8 @@ import './commands/ops';
 import './commands/data';
 import './commands/account';
 import pkg from '../package.json';
+import { dailyUpdateWarning } from './lib/update';
+import { cacheDir } from './lib/review';
 
 
 function help(group?: string): string {
@@ -50,6 +52,10 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const json = !!flags.json;
+  if (command.updateCheck !== false) {
+    const warning = dailyUpdateWarning(pkg.version, { dir: cacheDir() });
+    if (warning) console.error(warning);
+  }
   const ctx: Ctx = { args, flags, json, cwd: process.cwd(), log: (l) => (json ? console.error(l) : console.log(l)) };
   try {
     const r = await command.run(ctx);

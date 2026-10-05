@@ -34,6 +34,8 @@ export interface Command {
   details?: string;
   /** Flags that take a value (`--name value`); the rest are switches. */
   valued?: readonly string[];
+  /** `false`: the command is not preceded by the once-a-day "hh is behind" check (self-update). */
+  updateCheck?: false;
   run(ctx: Ctx): Promise<Result>;
 }
 
@@ -41,7 +43,7 @@ export const GROUPS: Record<string, string> = {
   dev: 'Changing a repo: verify, evidence, release, ready, review, bump-kit',
   ops: 'Operating the suite: auth domains, OAuth origins and redirect URIs, secrets, monitoring, household roles, profile check, staging cleanup',
   data: "The household's data as the signed-in person, under the household's rules (`hh login` first); the AI connector's tools",
-  account: 'Signing in: login, logout, whoami',
+  account: 'Signing in: login, logout, whoami; self-update',
 };
 
 const commands = new Map<string, Command>();

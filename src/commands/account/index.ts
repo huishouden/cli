@@ -6,7 +6,9 @@
 import { platform } from 'node:os';
 import { register } from '../../registry';
 import { forgetSignIn, loopbackLogin, NotSignedIn, signedIn, siteFor, storeSignIn } from '../../lib/signin';
-import { sh } from '../../lib/sh';
+import { sh, stream } from '../../lib/sh';
+import { installCommand, isOutdated, latestReleaseTag } from '../../lib/update';
+import pkg from '../../../package.json';
 
 register({
   group: 'account',
@@ -76,5 +78,24 @@ register({
       data: { site: site.name, removed, revoked: false, note },
       text: removed.length ? `Signed out of ${site.name}: removed from the ${removed.join(' and the ')}. ${note}` : `Not signed in to ${site.name}.`,
     };
+  },
+});
+
+register({
+  group: 'account',
+  name: 'self-update',
+  summary: 'Install the latest hh release (an exact tag, found with gh release view)',
+  usage: 'hh self-update [--json]',
+  updateCheck: false,
+  async run(ctx) {
+    const from = pkg.version;
+    const tag = latestReleaseTag();
+    if (!isOutdated(from, tag)) return { ok: true, data: { from, latest: tag, updated: false }, text: `hh ${from} is the latest (${tag})` };
+    ctx.log(`hh ${from} → ${tag}`);
+    // The tag is exact and never moves, so bun's cache for it is never stale: no remove first.
+    const code = await stream(installCommand(tag), { json: ctx.json });
+    return code === 0
+      ? { ok: true, data: { from, latest: tag, updated: true }, text: `hh ${from} → ${tag}` }
+      : { ok: false, data: { from, latest: tag, updated: false, error: `bun add -g exited ${code}` }, text: `Update to ${tag} failed (bun add -g exited ${code}). Run: ${installCommand(tag).join(' ')}` };
   },
 });

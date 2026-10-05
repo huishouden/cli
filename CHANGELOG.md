@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.0](https://github.com/huishouden/cli/compare/v1.3.2...v1.4.0) (2026-10-05)
+
+### Features
+
+* exact release tags, hh self-update, bump-kit moves workflow refs ([fd216c8](https://github.com/huishouden/cli/commit/fd216c851813143a29f515621f81c43bd83845ef))
+
+### Bug Fixes
+
+* review findings: update options, parse guard, --to validation, no remove before install ([e9111fb](https://github.com/huishouden/cli/commit/e9111fbb1f58ab885e53a0789ab31ee0b16bf21e))
+
 ## [1.3.2](https://github.com/huishouden/cli/compare/v1.3.1...v1.3.2) (2026-10-05)
 
 ### Bug Fixes
