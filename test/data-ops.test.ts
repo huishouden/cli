@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { toolNamed, type ToolCall } from '@huishouden/pwa-kit/household-tools';
+import { TOOLS, toolNamed, type ToolCall } from '@huishouden/pwa-kit/household-tools';
 import { plainText, render, table, toolArgs, valuedFlags } from '../src/lib/household';
 import { DATA_COMMANDS, usageFor } from '../src/commands/data';
 import { checkSecret, setSecret } from '../src/commands/ops/secret-set';
@@ -19,6 +19,8 @@ describe('hh data arguments', () => {
       expect([c.name, !!t]).toEqual([c.name, true]);
       for (const p of c.positional ?? []) expect([c.name, p, p in t!.input]).toEqual([c.name, p, true]);
     }
+    // Every tool the connector offers is a command here too: a new kit tool fails this until it has its row.
+    expect(TOOLS.map((t) => t.name).filter((n) => !DATA_COMMANDS.some((c) => c.tool === n))).toEqual([]);
     expect(usageFor(DATA_COMMANDS.find((c) => c.name === 'health dose')!)).toContain('hh data health dose <person> <medicine>');
   });
 

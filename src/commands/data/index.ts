@@ -44,6 +44,7 @@ export const DATA_COMMANDS: readonly DataCommand[] = [
   { name: 'health add', tool: 'health_add_medicine', positional: ['person', 'name'] },
   { name: 'health update', tool: 'health_update_medicine', positional: ['person', 'medicine'] },
   { name: 'health doctor-list', tool: 'health_doctor_list', positional: ['person'] },
+  { name: 'health appointments', tool: 'health_appointments', positional: ['person'] },
 ];
 
 /** `hh data groceries add <name> [--quantity <..>] …`, from the tool's schema. */
