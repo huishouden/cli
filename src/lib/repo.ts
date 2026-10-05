@@ -59,10 +59,11 @@ export interface PullRequest {
   headRefOid: string;
   baseRefName: string;
   title: string;
+  author?: { login: string };
 }
 
 export function currentPr(repo: Repo, number?: string): PullRequest | null {
-  const r = sh(['gh', 'pr', 'view', number ?? repo.branch, '-R', repo.slug, '--json', 'number,url,isDraft,headRefOid,baseRefName,title'], { cwd: repo.root });
+  const r = sh(['gh', 'pr', 'view', number ?? repo.branch, '-R', repo.slug, '--json', 'number,url,isDraft,headRefOid,baseRefName,title,author'], { cwd: repo.root });
   if (r.code !== 0) return null;
   return JSON.parse(r.stdout) as PullRequest;
 }

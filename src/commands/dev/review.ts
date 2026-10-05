@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { flagString, register } from '../../registry';
 import { currentPr, repoAt, scratchDir } from '../../lib/repo';
 import { has, sh } from '../../lib/sh';
-import { headReview, openBlocking, parseRollup, reviewThreads } from '../../lib/review';
+import { headReview, openBlocking, parseRollup, recordReview, reviewThreads } from '../../lib/review';
 export { openBlocking, parseRollup } from '../../lib/review';
 
 const PROFILE = 'reviewer';
@@ -120,14 +120,33 @@ register({
     const unresolved = threads.filter((t) => !t.resolved);
     const blocking = openBlocking(findings, threads);
     const ok = code === 0 && blocking.length === 0;
+    // cr posts nothing as the reviewer on a clean review, so record the result for the head commit.
+    let recorded = '';
+    if (code === 0) {
+      let run = 'unknown';
+      try {
+        const j = JSON.parse(readFileSync(out, 'utf8'));
+        run = String(j.run_id ?? j.run?.id ?? j.run?.run_id ?? j.id ?? 'unknown').replace(/[^\w.-]/g, '') || 'unknown';
+      } catch {
+        /* no JSON */
+      }
+      try {
+        const n = (s: string) => blocking.filter((f) => f.severity === s).length;
+        const r = recordReview(repo, pr.number, { sha: pr.headRefOid, blocking: n('Blocking'), major: n('Major'), minor: findings.filter((f) => f.severity === 'Minor').length, run });
+        recorded = `Recorded for ${pr.headRefOid.slice(0, 7)}: ${r.comment}; ${r.file}`;
+      } catch (e) {
+        recorded = `! could not record the result: ${(e as Error).message.slice(0, 300)}`;
+      }
+    }
     return {
       ok,
-      data: { pr: pr.number, head: pr.headRefOid, crExit: code, reviewers: agents, freshSession: fresh, findings, unresolved, openBlocking: blocking, barMet: blocking.length === 0 },
+      data: { recorded, pr: pr.number, head: pr.headRefOid, crExit: code, reviewers: agents, freshSession: fresh, findings, unresolved, openBlocking: blocking, barMet: blocking.length === 0 },
       text: [
         `cr review of #${pr.number} at ${pr.headRefOid.slice(0, 7)}: ${findings.length} findings (${['Blocking', 'Major', 'Minor', 'Nit'].map((s) => `${findings.filter((f) => f.severity === s).length} ${s}`).join(', ')}).`,
         ...findings.map((f) => `  ${f.severity.padEnd(8)} ${f.where}  (${f.reviewer})`),
         `${unresolved.length} unresolved thread(s); ${blocking.length} Blocking or Major open${blocking.length ? `: ${blocking.map((b) => b.where).join(', ')}` : ''}.`,
         blocking.length ? 'Fix or answer each Blocking/Major finding (reply in its thread and resolve it), push, and run hh dev review again.' : 'Review bar met (no Blocking or Major open).',
+        ...(recorded ? [recorded] : []),
       ].join('\n'),
     };
   },
