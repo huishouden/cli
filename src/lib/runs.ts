@@ -6,6 +6,7 @@ import { hasScript, scratchDir, type Repo } from './repo';
 import { takeScreenshots, type Shots } from './screenshots';
 import { has, sh, shOk, stream } from './sh';
 import { Steps } from './steps';
+import { sweepStaging } from '../commands/ops/staging-cleanup';
 
 export const STAGING_PROJECT = 'huishouden-staging';
 const FIREBASE_TOOLS = 'firebase-tools@14.27.0';
@@ -90,8 +91,9 @@ async function screenshotsAt(repo: Repo, steps: Steps, url: string, opts: RunOpt
     async () => {
       shots = await takeScreenshots(repo, url, join(opts.outDir, 'screenshots'), opts.json);
       const n = Object.values(shots.files).reduce((a, f) => a + f.length, 0);
-      if (shots.failed.length) throw new Error(`${n} taken; failed: ${shots.failed.join(', ')}`);
-      return `${n} images`;
+      if (shots.failed.length) throw new Error(`${n} taken; no images at all for ${shots.failed.join(', ')}`);
+      const missing = shots.partial.map((id) => `${id}: ${Math.max(...Object.values(shots!.files).map((f) => f.length)) - shots!.files[id].length} scenes missing`);
+      return `${n} images${missing.length ? `; ${missing.join(', ')} (scenes written for another size)` : ''}`;
     },
     { always: false },
   );
@@ -213,5 +215,7 @@ export async function runStaging(repo: Repo, opts: RunOptions): Promise<RunResul
   }
   const shots = steps.ok ? await screenshotsAt(repo, steps, url, opts) : undefined;
   if (steps.ok) await emulatorTests(repo, steps, opts);
+  // Leftovers of earlier runs (over a day old), since nothing sweeps staging on a schedule.
+  await steps.run('staging cleanup (leftovers over a day old)', async () => (await sweepStaging(repo, opts.json)) === 0 || 'sweep failed; run hh ops staging-cleanup', { always: true });
   return { steps, shots, url };
 }

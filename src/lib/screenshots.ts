@@ -61,7 +61,10 @@ export interface Shots {
   dir: string;
   /** variant id → file names */
   files: Record<string, string[]>;
+  /** Variants that produced no image at all. */
   failed: string[];
+  /** Variants where some scenes didn't render at that size. */
+  partial: string[];
 }
 
 export async function takeScreenshots(repo: Repo, baseUrl: string, outDir: string, json: boolean): Promise<Shots> {
@@ -73,17 +76,19 @@ export async function takeScreenshots(repo: Repo, baseUrl: string, outDir: strin
   if (!config) throw new Error('no playwright.config.ts');
   const wrapper = join(scratchDir(repo), 'playwright.variant.config.ts');
   writeFileSync(wrapper, WRAPPER(config));
-  const shots: Shots = { dir: outDir, files: {}, failed: [] };
+  const shots: Shots = { dir: outDir, files: {}, failed: [], partial: [] };
   for (const v of VARIANTS) {
     const dir = join(outDir, v.id);
     mkdirSync(dir, { recursive: true });
-    const code = await stream(['bunx', 'playwright', 'test', ...args, '--config', wrapper], {
+    // Retries off and a shorter timeout: a scene written for one size may not exist at another
+    // (a tablet-only panel on a phone); that variant then lacks the image, and the step says so.
+    const code = await stream(['bunx', 'playwright', 'test', ...args, '--config', wrapper, '--retries=0', '--timeout=20000'], {
       cwd: repo.root,
       json,
       env: { ...env, HH_VARIANT: JSON.stringify(v), SCREENSHOT_DIR: dir, BASE_URL: baseUrl, CI: '' },
     });
-    if (code !== 0) shots.failed.push(v.id);
     shots.files[v.id] = readdirSync(dir).filter((f) => f.endsWith('.png')).sort();
+    if (code !== 0) (shots.files[v.id].length ? shots.partial : shots.failed).push(v.id);
   }
   return shots;
 }
