@@ -3,9 +3,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { autoUpdate, isSourceCheckout, SIX_HOURS_MS } from '../src/lib/autoupdate';
+import { kitOnlyDiff, newestFirst } from '../src/lib/carry';
 import { kitHasTarball, kitPin, kitSpec, kitSync } from '../src/lib/kitbump';
 import { repoAt } from '../src/lib/repo';
-import { defaultReviewer } from '../src/lib/review';
+import { defaultReviewer, judgeWithCarry, reviewCandidates, reviewMarkBody, type ReviewVerdict } from '../src/lib/review';
 import { readyFlow } from '../src/commands/dev/ready';
 import type { Ctx } from '../src/registry';
 
@@ -119,7 +120,7 @@ function appRepo(pin = 'github:huishouden/pwa-kit#v0.94.0', ref = 'v0.94.0', bra
   git(root, 'checkout', '-q', '-b', 'main');
   mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', dependencies: { '@huishouden/pwa-kit': pin } }, null, 2) + '\n');
-  writeFileSync(join(root, 'bun.lock'), 'lock v0.94.0\n');
+  writeFileSync(join(root, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.94.0', '3f791fa'));
   writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), CI(ref));
   git(root, 'add', '.');
   git(root, 'commit', '-q', '-m', 'feat: app');
@@ -132,9 +133,11 @@ function appRepo(pin = 'github:huishouden/pwa-kit#v0.94.0', ref = 'v0.94.0', bra
   return { root, origin };
 }
 
+const LOCK = (pin: string, sha: string, owner = 'huishouden') => `        "@huishouden/pwa-kit": "${pin}",\n    "@huishouden/pwa-kit": ["@huishouden/pwa-kit@github:${owner}/pwa-kit#${sha}", {}, "huishouden-pwa-kit-${sha}"],\n    "zod": ["zod@4.0.0", {}, "sha512-aaa"],\n`;
+
 const logs: string[] = [];
 const log = (l: string) => logs.push(l);
-const fakeInstall = (root: string) => (writeFileSync(join(root, 'bun.lock'), 'lock v0.98.0\n'), true);
+const fakeInstall = (root: string) => (writeFileSync(join(root, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234')), true);
 
 test('kit sync: behind repo gets "chore: kit vX.Y.Z" on the branch, pushed, lock and workflow refs included', () => {
   const { root, origin } = appRepo();
@@ -248,12 +251,14 @@ const ctxFor = (cwd: string, flags: Ctx['flags'] = {}): Ctx => ({ args: [], flag
 const marker = (sha: string) => `<!-- hh-evidence sha=${sha} mode=local result=pass -->`;
 const reviewMark = (sha: string) => `<!-- hh-review sha=${sha} blocking=0 major=0 minor=0 run=r1 -->`;
 
+const withRoute = (routes: { match: string; stdout?: string; code?: number }[], match: string, stdout: string) => routes.map((r) => (r.match === match ? { ...r, stdout } : r));
+
 function readyRoutes(head: string, opts: { draft?: boolean } = {}) {
   return [
     { match: 'pr view', stdout: JSON.stringify({ number: 3, url: 'https://github.com/o/app/pull/3', isDraft: opts.draft ?? true, headRefOid: head, headRefName: 'feat', baseRefName: 'main', title: 't', author: { login: 'piekstra' } }) },
     { match: '/pulls/3/reviews', stdout: '' },
     { match: 'graphql', stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }) },
-    { match: 'hh-evidence', stdout: JSON.stringify([{ body: marker(head), html_url: 'https://x/c', updated_at: '2026-10-05' }]) + '\n' },
+    { match: 'hh-evidence', stdout: JSON.stringify([{ login: 'piekstra', body: marker(head), html_url: 'https://x/c', updated_at: '2026-10-05' }]) + '\n' },
     { match: 'login: .user.login, body', stdout: JSON.stringify([{ login: 'piekstra', body: reviewMark(head) }]) + '\n' },
     { match: 'pr ready', stdout: '' },
   ];
@@ -272,29 +277,62 @@ test('ready: needs no version bump or CHANGELOG; marks the draft ready when revi
   expect(calls().some((c) => c.startsWith('pr ready 3'))).toBe(true);
 });
 
-test('ready: a behind kit is bumped, pushed, and review and evidence are redone for the new head', async () => {
+const TAG = (t: string) => (t === 'v0.98.0' ? 'abc1234' + '0'.repeat(33) : undefined);
+const BEHIND = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall };
+
+/** Review and evidence recorded for `sha`; after a redo they are recorded for whatever the checkout's HEAD is. */
+function redoing(root: string, reran: string[]) {
+  const redo = (name: string) => async (c: Ctx) => {
+    reran.push(`${name}:${c.flags['no-bump-kit']}:${c.flags.local ?? ''}`);
+    writeFileSync(process.env.FAKE_GH_ROUTES!, JSON.stringify(readyRoutes(git(root, 'rev-parse', 'HEAD'))));
+    return { ok: true, data: {} };
+  };
+  return { review: redo('review'), evidence: redo('evidence') };
+}
+
+test('ready: a kit bump alone keeps the review and evidence of the earlier commit (no redo)', async () => {
   const { root, origin } = appRepo();
   const old = git(root, 'rev-parse', 'HEAD');
-  let newHead = '';
   const calls = fakeGh(readyRoutes(old));
   process.env.FAKE_GH_HEAD_CWD = root;
   const reran: string[] = [];
-  const redo = (name: string) => async (c: Ctx) => {
-    reran.push(`${name}:${c.flags['no-bump-kit']}:${c.flags.local ?? ''}`);
-    newHead = git(root, 'rev-parse', 'HEAD');
-    // The recorded review and evidence are now for the new head.
-    writeFileSync(process.env.FAKE_GH_ROUTES!, JSON.stringify(readyRoutes(newHead)));
-    return { ok: true, data: {} };
-  };
-  const kitDeps = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall };
-  const res = await readyFlow(ctxFor(root), { kit: kitDeps, review: redo('review'), evidence: redo('evidence') });
-  delete process.env.FAKE_GH_HEAD_CWD;
-  expect(reran).toEqual(['review:true:', 'evidence:true:true']);
-  expect(newHead).not.toBe(old);
-  expect(git(origin, 'rev-parse', 'feat')).toBe(newHead);
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, tagCommit: TAG, ...redoing(root, reran) });
+  expect(reran).toEqual([]);
+  expect(git(root, 'rev-parse', 'HEAD')).not.toBe(old);
+  expect(git(origin, 'rev-parse', 'feat')).toBe(git(root, 'rev-parse', 'HEAD'));
   expect(res.ok).toBe(true);
-  expect((res.data as { actions: string[] }).actions[0]).toContain('kit v0.94.0 → v0.98.0 committed and pushed');
+  const data = res.data as { actions: string[]; checks: { name: string; detail: string }[] };
+  expect(data.actions[0]).toContain('kit v0.94.0 → v0.98.0 committed and pushed');
+  expect(data.checks.map((c) => c.detail).join('\n')).toContain(`carried from ${old.slice(0, 7)}`);
   expect(calls().some((c) => c.startsWith('pr ready 3'))).toBe(true);
+});
+
+test('ready: the carry also covers a bump that an earlier command already committed', async () => {
+  const { root } = appRepo();
+  const old = git(root, 'rev-parse', 'HEAD');
+  kitSync(repoAt(root), { push: true, log }, BEHIND);
+  fakeGh(readyRoutes(old));
+  process.env.FAKE_GH_HEAD_CWD = root;
+  const reran: string[] = [];
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, tagCommit: TAG, ...redoing(root, reran) });
+  expect(reran).toEqual([]);
+  expect(res.ok).toBe(true);
+});
+
+test('ready: a change besides the kit since the review is not carried: review and evidence are redone', async () => {
+  const { root } = appRepo();
+  const old = git(root, 'rev-parse', 'HEAD');
+  writeFileSync(join(root, 'code.ts'), 'export const x = 1;\n');
+  git(root, 'add', '.');
+  git(root, 'commit', '-q', '-m', 'feat: code');
+  git(root, 'push', '-q');
+  fakeGh(readyRoutes(old));
+  process.env.FAKE_GH_HEAD_CWD = root;
+  const reran: string[] = [];
+  const res = await readyFlow(ctxFor(root), { kit: BEHIND, tagCommit: TAG, ...redoing(root, reran) });
+  expect(reran).toEqual(['review:true:', 'evidence:true:true']);
+  expect(res.ok).toBe(true);
+  expect(JSON.stringify(res.data)).not.toContain('carried');
 });
 
 test('ready: --dry-run and --no-bump-kit leave the branch alone', async () => {
@@ -312,9 +350,7 @@ test('ready: --dry-run and --no-bump-kit leave the branch alone', async () => {
 test('ready: stale evidence for the head still blocks', async () => {
   const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
   const head = git(root, 'rev-parse', 'HEAD');
-  const routes = readyRoutes(head);
-  routes[2] = { match: 'hh-evidence', stdout: JSON.stringify([{ body: marker('f'.repeat(40)), html_url: 'u', updated_at: '1' }]) + '\n' };
-  fakeGh(routes);
+  fakeGh(withRoute(readyRoutes(head), 'hh-evidence', JSON.stringify([{ login: 'piekstra', body: marker('f'.repeat(40)), html_url: 'u', updated_at: '1' }]) + '\n'));
   const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
   expect(r.ok).toBe(false);
   expect(existsSync(join(root, 'CHANGELOG.md'))).toBe(false);
@@ -347,4 +383,145 @@ test('kit sync: a latest tag that is not an exact vX.Y.Z is never written anywhe
   const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0"\nx', hasTarball: () => false, install: fakeInstall });
   expect(r.status).toBe('skipped');
   expect(git(root, 'status', '--porcelain')).toBe('');
+});
+
+// ---- the carry rule ----------------------------------------------------------------------------
+
+function afterBump(edit: (root: string) => void): { root: string; base: string; head: string } {
+  const { root } = appRepo();
+  const base = git(root, 'rev-parse', 'HEAD');
+  kitSync(repoAt(root), { log }, BEHIND);
+  edit(root);
+  return { root, base, head: git(root, 'rev-parse', 'HEAD') };
+}
+const commitAll = (root: string, msg = 'chore: x') => (git(root, 'add', '.'), git(root, 'commit', '-q', '-m', msg));
+
+test('carry: the kit commit alone is accepted', () => {
+  const { root, base, head } = afterBump(() => {});
+  expect(kitOnlyDiff(root, base, head, { tagCommit: TAG })).toMatchObject({ ok: true });
+});
+
+test('carry: any other file, or another change in package.json or a workflow, is refused', () => {
+  const cases: [string, (r: string) => void][] = [
+    ['source file', (r) => (writeFileSync(join(r, 'a.ts'), 'x\n'), commitAll(r))],
+    ['another dependency', (r) => (writeFileSync(join(r, 'package.json'), readFileSync(join(r, 'package.json'), 'utf8').replace('"dependencies": {', '"dependencies": {\n    "left-pad": "1.0.0",')), commitAll(r))],
+    ['package version', (r) => (writeFileSync(join(r, 'package.json'), readFileSync(join(r, 'package.json'), 'utf8').replace('0.0.0', '9.9.9')), commitAll(r))],
+    ['workflow body', (r) => (writeFileSync(join(r, '.github/workflows/ci.yml'), readFileSync(join(r, '.github/workflows/ci.yml'), 'utf8') + '  extra: 1\n'), commitAll(r))],
+    ['new workflow', (r) => (writeFileSync(join(r, '.github/workflows/new.yml'), CI('v0.98.0')), commitAll(r))],
+    ['readme', (r) => (writeFileSync(join(r, 'README.md'), 'hi\n'), commitAll(r))],
+  ];
+  for (const [name, edit] of cases) {
+    dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
+    const { root, base, head } = afterBump(edit);
+    expect([name, kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok]).toEqual([name, false]);
+  }
+});
+
+test('carry: nothing changed, or a commit that is not an ancestor, is refused', () => {
+  const { root, base, head } = afterBump(() => {});
+  expect(kitOnlyDiff(root, head, head, { tagCommit: TAG }).ok).toBe(false);
+  expect(kitOnlyDiff(root, head, base, { tagCommit: TAG }).ok).toBe(false);
+});
+
+test('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock change beyond the kit are refused', () => {
+  const pkg = (r: string, f: (t: string) => string) => (writeFileSync(join(r, 'package.json'), f(readFileSync(join(r, 'package.json'), 'utf8'))), commitAll(r));
+  const wf = (r: string, f: (t: string) => string) => (writeFileSync(join(r, '.github/workflows/ci.yml'), f(readFileSync(join(r, '.github/workflows/ci.yml'), 'utf8'))), commitAll(r));
+  const cases: [string, (r: string) => void][] = [
+    ['foreign owner', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'github:someone/pwa-kit#v0.98.0'))],
+    ['other host tarball', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'https://evil.example/download/v0.98.0/x.tgz'))],
+    ['downgrade', (r) => pkg(r, (t) => t.replace(/#v0\.98\.0/, '#v0.90.0'))],
+    ['branch ref', (r) => wf(r, (t) => t.replace('pwa.yml@v0.98.0', 'pwa.yml@main'))],
+    ['lock beyond kit', (r) => (writeFileSync(join(r, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234').replace('zod@4.0.0', 'zod@4.0.1')), commitAll(r))],
+    ['lock kit from elsewhere', (r) => (writeFileSync(join(r, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234').replace('github:huishouden/pwa-kit#abc1234', 'github:evil/pwa-kit#abc1234')), commitAll(r))],
+  ];
+  for (const [name, edit] of cases) {
+    dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
+    const { root, base, head } = afterBump(edit);
+    expect([name, kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok]).toEqual([name, false]);
+  }
+});
+
+const V = (status: ReviewVerdict['status'], detail = status): ReviewVerdict => ({ ok: status === 'pass', status, detail });
+
+test('review carry: only when nothing reviewed the head; a failing earlier review is not skipped', () => {
+  const kitOnly = () => ({ ok: true, detail: 'kit only' });
+  // The head has its own verdict, pass or fail: no earlier one replaces it.
+  expect(judgeWithCarry('H', (s) => (s === 'H' ? V('fail') : V('pass')), ['A'], kitOnly).status).toBe('fail');
+  expect(judgeWithCarry('H', (s) => (s === 'H' ? V('pass') : V('fail')), ['A'], kitOnly).status).toBe('pass');
+  // Unreviewed head: the newest kit-equivalent candidate decides, even when it fails.
+  const byCommit: Record<string, ReviewVerdict> = { H: V('none'), B: V('fail'), A: V('pass') };
+  expect(judgeWithCarry('H', (s) => byCommit[s], ['B', 'A'], kitOnly).status).toBe('fail');
+  const carried = judgeWithCarry('H', (s) => byCommit[s], ['A'], kitOnly);
+  expect(carried).toMatchObject({ ok: true, status: 'pass' });
+  expect(carried.detail).toContain('carried from A to H: kit only');
+  // A candidate that differs by more than the kit is passed over.
+  expect(judgeWithCarry('H', (s) => byCommit[s], ['B', 'A'], (s) => ({ ok: s === 'A', detail: 'x' })).status).toBe('pass');
+  expect(judgeWithCarry('H', (s) => byCommit[s], ['A'], () => ({ ok: false, detail: 'x' })).status).toBe('none');
+});
+
+test('review candidates: reviewer reviews and trusted markers, without the head, deduplicated', () => {
+  const m = (sha: string) => reviewMarkBody({ sha, blocking: 0, major: 0, minor: 0, run: 'r' });
+  const comments = [{ login: 'piekstra', body: m('a'.repeat(40)) }, { login: 'mallory', body: m('c'.repeat(40)) }, { login: 'piekstra-dev', body: m('b'.repeat(40)) }];
+  expect(reviewCandidates(['a'.repeat(40), 'd'.repeat(40)], comments, 'piekstra-dev', 'piekstra', 'd'.repeat(40)).sort()).toEqual(['a'.repeat(40), 'b'.repeat(40)]);
+});
+
+test('ready: a failing review of the head is not replaced by an earlier clean marker', async () => {
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
+  const old = git(root, 'rev-parse', 'HEAD');
+  writeFileSync(join(root, 'bun.lock'), readFileSync(join(root, 'bun.lock'), 'utf8') + '# touched\n');
+  git(root, 'commit', '-qam', 'chore: lock');
+  git(root, 'push', '-q');
+  const head = git(root, 'rev-parse', 'HEAD');
+  fakeGh(withRoute(readyRoutes(head), 'login: .user.login, body', JSON.stringify([{ login: 'piekstra', body: reviewMark(old) }, { login: 'piekstra', body: reviewMarkBody({ sha: head, blocking: 1, major: 0, minor: 0, run: 'r2' }) }]) + '\n'));
+  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
+  expect(r.ok).toBe(false);
+  const review = (r.data as { checks: { name: string; ok: boolean; detail: string }[] }).checks.find((c) => c.name === 'review')!;
+  expect(review.ok).toBe(false);
+  expect(review.detail).toContain('1 Blocking, 0 Major');
+});
+
+test('ready: an evidence comment from anyone but the PR author or the reviewer is ignored', async () => {
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
+  const head = git(root, 'rev-parse', 'HEAD');
+  fakeGh(withRoute(readyRoutes(head), 'hh-evidence', JSON.stringify([{ login: 'mallory', body: marker(head), html_url: 'u', updated_at: '1' }]) + '\n'));
+  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
+  expect(r.ok).toBe(false);
+  expect((r.data as { checks: { detail: string }[] }).checks[1].detail).toContain('no evidence comment');
+});
+
+test('candidates are ordered by history, not by where the review was found', () => {
+  const { root } = appRepo();
+  const X = git(root, 'rev-parse', 'HEAD');
+  git(root, 'commit', '-q', '--allow-empty', '-m', 'chore: y');
+  const Y = git(root, 'rev-parse', 'HEAD');
+  git(root, 'commit', '-q', '--allow-empty', '-m', 'chore: z');
+  const Z = git(root, 'rev-parse', 'HEAD');
+  // A marker for the older X and a reviewer review of the newer Y: Y comes first however they were found.
+  expect(newestFirst(root, Z, [X, Y])).toEqual([Y, X]);
+  expect(newestFirst(root, Z, [Y, X])).toEqual([Y, X]);
+  expect(newestFirst(root, Z, ['f'.repeat(40), X])).toEqual([X]);
+});
+
+test('carry: the lock must resolve the kit to the release package.json pins', () => {
+  const setLock = (text: string) => (r: string) => (writeFileSync(join(r, 'bun.lock'), text), git(r, 'add', '.'), git(r, 'commit', '-q', '--allow-empty', '-m', 'chore: lock'));
+  const good = LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234');
+  const tarball = (tag: string) => `https://github.com/huishouden/pwa-kit/releases/download/${tag}/pwa-kit-${tag.slice(1)}.tgz`;
+  const entry = (src: string) => good.replace('github:huishouden/pwa-kit#abc1234', src);
+  const cases: [string, (r: string) => void, boolean][] = [
+    ['commit of the tag', setLock(good), true],
+    ['another commit of the repo', setLock(LOCK('github:huishouden/pwa-kit#v0.98.0', 'deadbee')), false],
+    ['an older tag tarball', setLock(entry(tarball('v0.90.0'))), false],
+    ['the pinned tag tarball', setLock(entry(tarball('v0.98.0'))), true],
+    ['workspace pin differs from package.json', setLock(good.replace('"github:huishouden/pwa-kit#v0.98.0"', '"github:huishouden/pwa-kit#v0.97.0"')), false],
+    ['trailing content on the entry line', setLock(good.replace('"huishouden-pwa-kit-abc1234"],', '"huishouden-pwa-kit-abc1234"], "x": 1,')), false],
+  ];
+  for (const [name, edit, ok] of cases) {
+    dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
+    const { root, base, head } = afterBump(edit);
+    expect([name, kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok]).toEqual([name, ok]);
+  }
+  // The tag's commit cannot be looked up: refuse rather than guess.
+  dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
+  const { root, base, head } = afterBump(() => {});
+  expect(kitOnlyDiff(root, base, head, { tagCommit: () => undefined })).toMatchObject({ ok: false });
 });

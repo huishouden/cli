@@ -102,7 +102,12 @@ export interface Comment {
 export interface ReviewVerdict {
   ok: boolean;
   detail: string;
+  /** `none`: nothing reviewed this commit (a verdict on it, pass or fail, is never replaced by an earlier one). */
+  status: 'pass' | 'fail' | 'none';
 }
+
+/** Who may vouch for a review marker: the reviewer account and the PR author. */
+export const trustedLogins = (reviewer: string, author: string | undefined): Set<string> => new Set([reviewer, ...(author ? [author] : [])]);
 
 /**
  * The review bar for `head`: the reviewer's review of it with no Blocking/Major open, or else an
@@ -115,16 +120,16 @@ export function judgeReview(input: { head: string; reviewer: string; author: str
   // A review by the reviewer account decides; the marker only stands in when there is none.
   if (review) {
     const open = openBlocking(review.findings, input.threads());
-    return open.length === 0 ? { ok: true, detail: `${reviewer} reviewed ${short}; no Blocking or Major open` } : { ok: false, detail: `${open.length} Blocking/Major finding(s) open: ${open.map((f) => f.where).join(', ')}` };
+    return open.length === 0 ? { ok: true, status: 'pass', detail: `${reviewer} reviewed ${short}; no Blocking or Major open` } : { ok: false, status: 'fail', detail: `${open.length} Blocking/Major finding(s) open: ${open.map((f) => f.where).join(', ')}` };
   }
-  const trusted = new Set([reviewer, ...(author ? [author] : [])]);
+  const trusted = trustedLogins(reviewer, author);
   const marks = comments.filter((c) => trusted.has(c.login)).flatMap((c) => parseReviewMarker(c.body) ?? []);
   const forHead = marks.filter((m) => m.sha === head);
   const clean = forHead.find((m) => m.blocking === 0 && m.major === 0);
-  if (clean) return { ok: true, detail: `hh review marker for ${short}: 0 Blocking, 0 Major (${clean.minor} Minor), cr run ${clean.run}` };
-  if (forHead.length) return { ok: false, detail: `hh review marker for ${short} reports ${forHead[0].blocking} Blocking, ${forHead[0].major} Major: fix them and run hh dev review` };
+  if (clean) return { ok: true, status: 'pass', detail: `hh review marker for ${short}: 0 Blocking, 0 Major (${clean.minor} Minor), cr run ${clean.run}` };
+  if (forHead.length) return { ok: false, status: 'fail', detail: `hh review marker for ${short} reports ${forHead[0].blocking} Blocking, ${forHead[0].major} Major: fix them and run hh dev review` };
   const stale = marks.at(-1);
-  return { ok: false, detail: stale ? `the last hh review is of ${stale.sha.slice(0, 7)}, head is ${short} (hh dev review)` : `no ${reviewer} review or hh review marker for ${short} (hh dev review)` };
+  return { ok: false, status: 'none', detail: stale ? `the last hh review is of ${stale.sha.slice(0, 7)}, head is ${short} (hh dev review)` : `no ${reviewer} review or hh review marker for ${short} (hh dev review)` };
 }
 
 /** The marker for a review of `head`: Blocking and Major are the ones still open after thread resolution, Minor all reported. */
@@ -163,3 +168,35 @@ export function cacheDir(): string {
 
 /** The account whose review counts: HH_REVIEWER, else piekstra-dev. */
 export const defaultReviewer = (): string => process.env.HH_REVIEWER ?? 'piekstra-dev';
+
+/** Commits the reviewer account has reviewed on the PR, oldest first. */
+export function reviewedShas(repo: Repo, pr: number, reviewer: string): string[] {
+  const r = sh(['gh', 'api', `repos/${repo.slug}/pulls/${pr}/reviews`, '--paginate', '--jq', `[.[] | select(.user.login == "${reviewer}") | .commit_id]`]);
+  if (r.code !== 0) return [];
+  return r.stdout.trim().split('\n').filter(Boolean).flatMap((l) => JSON.parse(l) as string[]);
+}
+
+/** Earlier commits that were reviewed (by the reviewer, or an hh-review marker from a trusted login), without `head`, in no particular order: order them by history (newestFirst in lib/carry) before judgeWithCarry. */
+export function reviewCandidates(reviewed: string[], comments: Comment[], reviewer: string, author: string | undefined, head: string): string[] {
+  const trusted = trustedLogins(reviewer, author);
+  const marked = comments.filter((c) => trusted.has(c.login)).flatMap((c) => parseReviewMarker(c.body)?.sha ?? []);
+  return [...new Set([...reviewed, ...marked])].filter((s) => s !== head);
+}
+
+/**
+ * The review verdict for `head`. Only when nothing reviewed `head` at all does an earlier review
+ * count, and then the newest earlier commit that differs by the kit alone (`kitOnly`) decides, pass
+ * or fail: a failing one is never skipped to reach an older passing one.
+ */
+export function judgeWithCarry(head: string, judge: (sha: string) => ReviewVerdict, candidates: string[], kitOnly: (sha: string) => { ok: boolean; detail: string }): ReviewVerdict {
+  const own = judge(head);
+  if (own.status !== 'none') return own;
+  for (const sha of candidates) {
+    const diff = kitOnly(sha);
+    if (!diff.ok) continue;
+    const v = judge(sha);
+    if (v.status === 'none') continue;
+    return { ...v, detail: `${v.detail}; carried from ${sha.slice(0, 7)} to ${head.slice(0, 7)}: ${diff.detail}` };
+  }
+  return own;
+}

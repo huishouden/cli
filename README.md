@@ -32,7 +32,7 @@ The author owns everything before `main`; pull requests run no hosted CI (pwa-ki
 | 2 | `hh dev review` | `cr review` as the reviewer account with the org's reviewers (huishouden/cr-reviewers, cloned to `~/Dev/huishouden-cr-reviewers` and registered on the `reviewer` profile if missing; `--max-agents 8`; `--fresh-session` on a PR's first review after the reviewers change), one review at a time on the machine; lists findings and unresolved threads. Bar: no Blocking or Major |
 | 3 | `hh dev verify` | Install, lint, the kit's checks (design, writes, headers, i18n, bandwidth), unit tests, build, screenshots on a local preview (phone and tablet, light and dark; a scene written for one size that doesn't render at the other is reported, not failed), emulator tests with the household's rules |
 | 3 | `hh dev evidence` | The same, or on the app's staging site when the change touches rules, Workers, sign-in, Google or notifications (`--staging`/`--local` override): build against `huishouden-staging`, deploy the suite with this build to the app's staging site with your own `firebase` login, smoke and signed-in tests there (`pwa-staging run`), screenshots. Posts or updates one PR comment with the results and the images (GitHub's user-attachments). Never production |
-| 4 | `hh dev ready` | Refuses unless the reviewer account reviewed the head commit and no Blocking or Major finding is still open (a finding closes when its threads on its line are resolved; one posted only in the review body stays open until a later review drops it) and the evidence comment is for the head commit and passed; then `gh pr ready`. If the kit was behind it is bumped first (below) and review and evidence are redone for the new head |
+| 4 | `hh dev ready` | Refuses unless the reviewer account reviewed the head commit and no Blocking or Major finding is still open (a finding closes when its threads on its line are resolved; one posted only in the review body stays open until a later review drops it) and the evidence comment is for the head commit and passed; then `gh pr ready`. If the kit was behind it is bumped first (below) and review and evidence are reused when only the kit moved since (see below), else redone |
 | 5 | merge (squash) | `main` builds and tests, then CI versions and releases (below) |
 
 The model: start a draft, run `hh dev ready`, merge. A PR carries no version, CHANGELOG or built
@@ -52,6 +52,15 @@ applies `bump-kit` as a commit "chore: kit vX.Y.Z" on the current branch (packag
 and the exact workflow refs), pushes it when the branch has an upstream, and prints what changed,
 so the PR carries it. `--no-bump-kit` skips it; it never runs on `main` or over uncommitted edits
 to `package.json`, `bun.lock` or the workflows.
+
+`hh dev ready` accepts a review or evidence of an earlier commit (an ancestor) when the diff since
+it touches only the kit: `package.json` changed only in its `@huishouden/pwa-kit` pin (to
+huishouden/pwa-kit's release at an equal or later exact tag), `.github/workflows/*.y(a)ml` changed
+only in their `huishouden/pwa-kit/.github/workflows/*@vX.Y.Z` refs (exact tags, none going back),
+and `bun.lock` changed only on the kit's own two lines, resolving to that same release (its tarball URL, or the commit its tag points to). Any other file or change refuses, and review
+and evidence are redone. An earlier review is used only when nothing reviewed the head itself (a
+failing review of the head is never replaced), and evidence comments count only from the PR author
+or the reviewer.
 
 `hh dev bump-kit` moves `@huishouden/pwa-kit` (to the latest release's tarball URL when the release
 has one, else its git tag) and the `huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z` workflow
