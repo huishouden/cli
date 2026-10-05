@@ -36,7 +36,7 @@ function updater(over: Partial<Parameters<typeof autoUpdate>[0]> = {}) {
     env: {} as Record<string, string | undefined>,
     sourceCheckout: false,
     latest: () => (calls.latest++, 'v1.5.0'),
-    install: async (t: string) => (calls.install.push(t), 0),
+    install: async (t: string) => (calls.install.push(t), { kind: 'installed' as const }),
     reexec: (a: string[]) => (calls.reexec.push(a), 7),
     ...over,
   };
@@ -76,7 +76,7 @@ test('self-update: offline and install failures never block', async () => {
   const offline = updater({ latest: () => { throw new Error('no network'); } });
   expect(await offline.run()).toEqual({ status: 'offline' });
   expect(offline.calls.reexec).toEqual([]);
-  const failed = updater({ dir: mkdtempSync(join(tmpdir(), 'hh-auto-')), install: async () => 1 });
+  const failed = updater({ dir: mkdtempSync(join(tmpdir(), 'hh-auto-')), install: async () => ({ kind: 'restored' as const, code: 1 }) });
   const r = await failed.run();
   expect(r.status).toBe('failed');
   expect((r as { message: string }).message).toContain('bun add -g https://github.com/huishouden/cli/releases/download/v1.5.0/cli-1.5.0.tgz');

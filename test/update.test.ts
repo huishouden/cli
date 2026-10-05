@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bumpWorkflowRefs } from '../src/lib/kitbump';
-import { dailyUpdateWarning, installCommand, isOutdated, parseReleaseTag } from '../src/lib/update';
+import { dailyUpdateWarning, installCommand, installFailure, installTag, isOutdated, parseReleaseTag } from '../src/lib/update';
 
 let dir: string;
 beforeEach(() => {
@@ -78,4 +78,32 @@ test('next-version: tag and release only for feat, fix, perf, refactor or breaki
   expect(next()).toBe('v1.10.0 1.11.0');
   commit('refactor!: v');
   expect(next()).toBe('v1.10.0 2.0.0');
+});
+
+const ok = async () => true;
+
+test('install removes the old entry first, then adds the release tarball', async () => {
+  const ran: string[] = [];
+  expect(await installTag('v1.5.1', '1.5.0', async (c) => (ran.push(c.slice(0, 3).join(' ') + ' ' + c.at(-1)), 0), ok)).toEqual({ kind: 'installed' });
+  expect(ran).toEqual(['bun remove -g @huishouden/cli', 'bun add -g https://github.com/huishouden/cli/releases/download/v1.5.1/cli-1.5.1.tgz']);
+});
+
+test('install: nothing is removed when the asset is unreachable or the remove fails', async () => {
+  const ran: string[][] = [];
+  expect(await installTag('v1.5.1', '1.5.0', async (c) => (ran.push(c), 0), async () => false)).toEqual({ kind: 'unreachable' });
+  expect(ran).toEqual([]);
+  expect(await installTag('v1.5.1', '1.5.0', async (c) => (ran.push(c), 2), ok)).toEqual({ kind: 'remove-failed', code: 2 });
+  expect(ran).toHaveLength(1);
+});
+
+test('install: a failed add restores the old version; a failed restore says hh is uninstalled', async () => {
+  const added: string[] = [];
+  const failNew = async (c: string[]) => (c[1] === 'add' && added.push(c.at(-1)!), c.join(' ').includes('v1.5.1') ? 1 : 0);
+  expect(await installTag('v1.5.1', '1.5.0', failNew, ok)).toEqual({ kind: 'restored', code: 1 });
+  expect(added.at(-1)).toContain('/v1.5.0/cli-1.5.0.tgz');
+  const out = await installTag('v1.5.1', '1.5.0', async (c) => (c[1] === 'add' ? 1 : 0), ok);
+  expect(out).toEqual({ kind: 'uninstalled', code: 1 });
+  expect(installFailure(out as { kind: 'uninstalled'; code: number }, 'v1.5.1', '1.5.0')).toContain('hh is NOT installed');
+  // From a source checkout (0.0.0) there is no release to restore.
+  expect(await installTag('v1.5.1', '0.0.0', async (c) => (c[1] === 'add' ? 1 : 0), ok)).toEqual({ kind: 'uninstalled', code: 1 });
 });

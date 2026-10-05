@@ -3,8 +3,8 @@
 // failure is a warning (or silence, when offline) and the command runs on the current version.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { installCommand, isOutdated, latestReleaseTag } from './update';
-import { runInherit, stream } from './sh';
+import { installFailure, installTag, isOutdated, latestReleaseTag, type InstallOutcome } from './update';
+import { runInherit } from './sh';
 
 export const SIX_HOURS_MS = 6 * 3_600_000;
 
@@ -25,8 +25,8 @@ export interface AutoUpdateOptions {
   /** Running from a git checkout rather than a global install. */
   sourceCheckout: boolean;
   latest?: () => string;
-  /** Installs the tag; resolves to the installer's exit code. */
-  install?: (tag: string) => Promise<number>;
+  /** Installs the tag. */
+  install?: (tag: string) => Promise<InstallOutcome>;
   /** Progress for people (stderr). */
   log?: (line: string) => void;
   /** Runs the command again on the new version; returns its exit code. */
@@ -69,13 +69,13 @@ export async function autoUpdate(o: AutoUpdateOptions): Promise<AutoUpdate> {
   if (!isOutdated(o.version, tag)) return { status: 'current' };
   const to = tag.slice(1);
   (o.log ?? console.error)(`hh ${o.version} → ${to}: updating`);
-  let code: number;
+  let outcome: InstallOutcome;
   try {
-    code = await (o.install ?? ((t) => stream(installCommand(t), { json: true })))(tag);
+    outcome = await (o.install ?? ((t) => installTag(t, o.version)))(tag);
   } catch (e) {
     return { status: 'failed', message: `update to ${tag} failed: ${(e as Error).message}` };
   }
-  if (code !== 0) return { status: 'failed', message: `update to ${tag} failed (bun add -g exited ${code}); continuing on ${o.version}. Run: ${installCommand(tag).join(' ')}` };
+  if (outcome.kind !== 'installed') return { status: 'failed', message: installFailure(outcome, tag, o.version) };
   const rerun = o.reexec ?? ((argv) => runInherit([process.execPath, process.argv[1], ...argv], { HH_REEXEC: '1' }));
   return { status: 'updated', from: o.version, to, code: rerun(o.argv) };
 }
