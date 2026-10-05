@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { autoUpdate, isSourceCheckout, SIX_HOURS_MS } from '../src/lib/autoupdate';
-import { kitOnlyDiff } from '../src/lib/carry';
+import { kitOnlyDiff, newestFirst } from '../src/lib/carry';
 import { kitHasTarball, kitPin, kitSpec, kitSync } from '../src/lib/kitbump';
 import { repoAt } from '../src/lib/repo';
 import { defaultReviewer, judgeWithCarry, reviewCandidates, reviewMarkBody, type ReviewVerdict } from '../src/lib/review';
@@ -120,7 +120,7 @@ function appRepo(pin = 'github:huishouden/pwa-kit#v0.94.0', ref = 'v0.94.0', bra
   git(root, 'checkout', '-q', '-b', 'main');
   mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', dependencies: { '@huishouden/pwa-kit': pin } }, null, 2) + '\n');
-  writeFileSync(join(root, 'bun.lock'), '"@huishouden/pwa-kit": ["v0.94.0"]\nzod 4.0.0\n');
+  writeFileSync(join(root, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.94.0', '3f791fa'));
   writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), CI(ref));
   git(root, 'add', '.');
   git(root, 'commit', '-q', '-m', 'feat: app');
@@ -133,9 +133,11 @@ function appRepo(pin = 'github:huishouden/pwa-kit#v0.94.0', ref = 'v0.94.0', bra
   return { root, origin };
 }
 
+const LOCK = (pin: string, sha: string, owner = 'huishouden') => `        "@huishouden/pwa-kit": "${pin}",\n    "@huishouden/pwa-kit": ["@huishouden/pwa-kit@github:${owner}/pwa-kit#${sha}", {}, "huishouden-pwa-kit-${sha}"],\n    "zod": ["zod@4.0.0", {}, "sha512-aaa"],\n`;
+
 const logs: string[] = [];
 const log = (l: string) => logs.push(l);
-const fakeInstall = (root: string) => (writeFileSync(join(root, 'bun.lock'), '"@huishouden/pwa-kit": ["v0.98.0"]\nzod 4.0.0\n'), true);
+const fakeInstall = (root: string) => (writeFileSync(join(root, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234')), true);
 
 test('kit sync: behind repo gets "chore: kit vX.Y.Z" on the branch, pushed, lock and workflow refs included', () => {
   const { root, origin } = appRepo();
@@ -428,7 +430,8 @@ test('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock ch
     ['other host tarball', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'https://evil.example/download/v0.98.0/x.tgz'))],
     ['downgrade', (r) => pkg(r, (t) => t.replace(/#v0\.98\.0/, '#v0.90.0'))],
     ['branch ref', (r) => wf(r, (t) => t.replace('pwa.yml@v0.98.0', 'pwa.yml@main'))],
-    ['lock beyond kit', (r) => (writeFileSync(join(r, 'bun.lock'), '"@huishouden/pwa-kit": ["v0.98.0"]\nzod 4.0.1 evil\n'), commitAll(r))],
+    ['lock beyond kit', (r) => (writeFileSync(join(r, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234').replace('zod@4.0.0', 'zod@4.0.1')), commitAll(r))],
+    ['lock kit from elsewhere', (r) => (writeFileSync(join(r, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234').replace('github:huishouden/pwa-kit#abc1234', 'github:evil/pwa-kit#abc1234')), commitAll(r))],
   ];
   for (const [name, edit] of cases) {
     dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
@@ -455,10 +458,10 @@ test('review carry: only when nothing reviewed the head; a failing earlier revie
   expect(judgeWithCarry('H', (s) => byCommit[s], ['A'], () => ({ ok: false, detail: 'x' })).status).toBe('none');
 });
 
-test('review candidates: reviewer reviews and trusted markers, newest first, without the head, deduplicated', () => {
+test('review candidates: reviewer reviews and trusted markers, without the head, deduplicated', () => {
   const m = (sha: string) => reviewMarkBody({ sha, blocking: 0, major: 0, minor: 0, run: 'r' });
   const comments = [{ login: 'piekstra', body: m('a'.repeat(40)) }, { login: 'mallory', body: m('c'.repeat(40)) }, { login: 'piekstra-dev', body: m('b'.repeat(40)) }];
-  expect(reviewCandidates(['a'.repeat(40), 'd'.repeat(40)], comments, 'piekstra-dev', 'piekstra', 'd'.repeat(40))).toEqual(['b'.repeat(40), 'a'.repeat(40)]);
+  expect(reviewCandidates(['a'.repeat(40), 'd'.repeat(40)], comments, 'piekstra-dev', 'piekstra', 'd'.repeat(40)).sort()).toEqual(['a'.repeat(40), 'b'.repeat(40)]);
 });
 
 test('ready: a failing review of the head is not replaced by an earlier clean marker', async () => {
@@ -483,4 +486,17 @@ test('ready: an evidence comment from anyone but the PR author or the reviewer i
   const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
   expect(r.ok).toBe(false);
   expect((r.data as { checks: { detail: string }[] }).checks[1].detail).toContain('no evidence comment');
+});
+
+test('candidates are ordered by history, not by where the review was found', () => {
+  const { root } = appRepo();
+  const X = git(root, 'rev-parse', 'HEAD');
+  git(root, 'commit', '-q', '--allow-empty', '-m', 'chore: y');
+  const Y = git(root, 'rev-parse', 'HEAD');
+  git(root, 'commit', '-q', '--allow-empty', '-m', 'chore: z');
+  const Z = git(root, 'rev-parse', 'HEAD');
+  // A marker for the older X and a reviewer review of the newer Y: Y comes first however they were found.
+  expect(newestFirst(root, Z, [X, Y])).toEqual([Y, X]);
+  expect(newestFirst(root, Z, [Y, X])).toEqual([Y, X]);
+  expect(newestFirst(root, Z, ['f'.repeat(40), X])).toEqual([X]);
 });

@@ -176,11 +176,11 @@ export function reviewedShas(repo: Repo, pr: number, reviewer: string): string[]
   return r.stdout.trim().split('\n').filter(Boolean).flatMap((l) => JSON.parse(l) as string[]);
 }
 
-/** Earlier commits that were reviewed (by the reviewer, or an hh-review marker from a trusted login), newest first, without `head`. */
+/** Earlier commits that were reviewed (by the reviewer, or an hh-review marker from a trusted login), without `head`, in no particular order: order them by history (newestFirst in lib/carry) before judgeWithCarry. */
 export function reviewCandidates(reviewed: string[], comments: Comment[], reviewer: string, author: string | undefined, head: string): string[] {
   const trusted = trustedLogins(reviewer, author);
   const marked = comments.filter((c) => trusted.has(c.login)).flatMap((c) => parseReviewMarker(c.body)?.sha ?? []);
-  return [...new Set([...reviewed, ...marked])].reverse().filter((s) => s !== head);
+  return [...new Set([...reviewed, ...marked])].filter((s) => s !== head);
 }
 
 /**

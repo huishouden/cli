@@ -5,7 +5,7 @@ import { find, flagString, register, type Ctx, type Result } from '../../registr
 import { latestEvidence } from '../../lib/evidence';
 import { fetchBase } from '../../lib/repo';
 import { sh, shOk } from '../../lib/sh';
-import { kitOnlyDiff } from '../../lib/carry';
+import { kitOnlyDiff, newestFirst } from '../../lib/carry';
 import { prAfterSync, syncedRepo, type KitSyncDeps } from '../../lib/kitbump';
 import { defaultReviewer, headReview, issueComments, judgeReview, judgeWithCarry, reviewCandidates, reviewedShas, reviewThreads, trustedLogins } from '../../lib/review';
 
@@ -47,7 +47,7 @@ export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result>
     // (a clean review posts nothing as the reviewer) the hh-review marker for the head commit from
     // the PR author or the reviewer. A review of an earlier commit stands when only the kit moved since.
     const judge = (sha: string) => judgeReview({ head: sha, reviewer, author: pr.author?.login, review: headReview(repo, pr.number, sha, reviewer), threads: () => reviewThreads(repo, pr.number), comments });
-    const verdict = judgeWithCarry(head, judge, reviewCandidates(reviewedShas(repo, pr.number, reviewer), comments, reviewer, pr.author?.login, head), (sha) => kitOnlyDiff(root, sha, head));
+    const verdict = judgeWithCarry(head, judge, newestFirst(root, head, reviewCandidates(reviewedShas(repo, pr.number, reviewer), comments, reviewer, pr.author?.login, head)), (sha) => kitOnlyDiff(root, sha, head));
     const checks: Check[] = [{ name: 'review', ok: verdict.ok, detail: verdict.detail }];
 
     // 2. Evidence for the head commit, passed (or for an earlier one with only the kit moved since).
