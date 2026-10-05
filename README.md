@@ -22,7 +22,7 @@ The author owns everything before `main`; pull requests run no hosted CI (pwa-ki
 |---|---|---|
 | 1 | `gh pr create --draft` | Open the PR as a draft |
 | 2 | `hh dev review` | `cr review` as the reviewer account with the org's reviewers (huishouden/cr-reviewers, cloned to `~/Dev/huishouden-cr-reviewers` and registered on the `reviewer` profile if missing; `--max-agents 8`; `--fresh-session` on a PR's first review after the reviewers change), one review at a time on the machine; lists findings and unresolved threads. Bar: no Blocking or Major |
-| 3 | `hh dev verify` | Install, lint, the kit's checks (design, writes, headers, i18n, bandwidth), unit tests, build, screenshots on a local preview (phone and tablet, light and dark), emulator tests with the household's rules |
+| 3 | `hh dev verify` | Install, lint, the kit's checks (design, writes, headers, i18n, bandwidth), unit tests, build, screenshots on a local preview (phone and tablet, light and dark; a scene written for one size that doesn't render at the other is reported, not failed), emulator tests with the household's rules |
 | 3 | `hh dev evidence` | The same, or on the app's staging site when the change touches rules, Workers, sign-in, Google or notifications (`--staging`/`--local` override): build against `huishouden-staging`, deploy the suite with this build to the app's staging site with your own `firebase` login, smoke and signed-in tests there (`pwa-staging run`), screenshots. Posts or updates one PR comment with the results and the images (GitHub's user-attachments). Never production |
 | 4 | `hh dev release` | package.json version (semver from the Conventional Commits since the last tag) and its CHANGELOG.md section; `--commit` commits them |
 | 5 | `hh dev ready` | Refuses unless the reviewer account reviewed the head commit and no Blocking or Major finding is still open (a finding closes when its threads on its line are resolved; one posted only in the review body stays open until a later review drops it), the evidence comment is for the head commit and passed, and the version is bumped with its section (docs-only changes need none); then `gh pr ready` |
@@ -36,6 +36,11 @@ any repo you touch.
 `hh ops profile-check [--fix]`: the org profile (huishouden/.github `profile/README.md`) and every
 app's and Worker's repo description against `apps.json` and the repos with a `wrangler.toml`.
 `--fix` fills empty descriptions from `apps.json` and opens a PR adding missing rows.
+
+`hh ops staging-cleanup`: removes staging test households and people over a day old (the kit's
+`pwa-staging sweep`), with a token from your gcloud login impersonating the staging deploy account
+(needs Service Account Token Creator on it). Run it in any app repo; `hh dev evidence --staging` runs
+it after its tests. Nothing sweeps staging on a schedule.
 
 ## Account
 

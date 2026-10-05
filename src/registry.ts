@@ -35,7 +35,7 @@ export interface Command {
 
 export const GROUPS: Record<string, string> = {
   dev: 'Changing a repo: verify, evidence, release, ready, review, bump-kit',
-  ops: 'Operating the suite: profile check (more to come: auth domains, OAuth origins, secrets, New Relic, staging cleanup, roles)',
+  ops: 'Operating the suite: profile check, staging cleanup (more to come: auth domains, OAuth origins, secrets, New Relic, roles)',
   data: "The household's data as the signed-in person, under the household's rules (to come; `hh login` first)",
   account: 'Signing in: login, logout, whoami',
 };
