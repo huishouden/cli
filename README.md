@@ -12,7 +12,9 @@ hh self-update                                                                  
 hh updates itself: before a command runs, if a newer release exists (asked of GitHub at most once
 every 6 hours, cached in `~/.cache/hh`), it installs it and runs the same command on the new
 version. It does nothing in CI (`CI` set), with `HH_NO_AUTO_UPDATE=1`, offline, or from a source
-checkout, and a failed update is a warning, never a stop.
+checkout, and a failed update is a warning, never a stop. Trust model: write access to this repo's
+releases is code-signing authority, since machines install what a release carries (no separate
+signature or checksum); keep it to the people who merge to main.
 
 Needs [Bun](https://bun.sh). `hh login` and `hh data` need nothing else. The developer and
 operations commands also need [gh](https://cli.github.com) signed in, and for some of them

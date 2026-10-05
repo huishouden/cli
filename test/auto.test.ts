@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { autoUpdate, isSourceCheckout, SIX_HOURS_MS } from '../src/lib/autoupdate';
 import { kitHasTarball, kitPin, kitSpec, kitSync } from '../src/lib/kitbump';
 import { repoAt } from '../src/lib/repo';
+import { defaultReviewer } from '../src/lib/review';
 import { readyFlow } from '../src/commands/dev/ready';
 import type { Ctx } from '../src/registry';
 
@@ -80,6 +81,13 @@ test('self-update: offline and install failures never block', async () => {
   expect(failed.calls.reexec).toEqual([]);
   const threw = updater({ dir: mkdtempSync(join(tmpdir(), 'hh-auto-')), install: async () => { throw new Error('bun missing'); } });
   expect((await threw.run()).status).toBe('failed');
+});
+
+test('self-update: a corrupt stamp counts as never checked and is rewritten', async () => {
+  writeFileSync(join(dir, 'self-update'), 'garbage');
+  const u = updater();
+  expect((await u.run()).status).toBe('updated');
+  expect(Number(readFileSync(join(dir, 'self-update'), 'utf8'))).toBe(T0);
 });
 
 test('self-update: a global install is not a source checkout', () => {
@@ -308,4 +316,26 @@ test('ready: stale evidence for the head still blocks', async () => {
   const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
   expect(r.ok).toBe(false);
   expect(existsSync(join(root, 'CHANGELOG.md'))).toBe(false);
+});
+
+test('ready: a kit commit that could not be pushed stops before any waiting or redo', async () => {
+  const { root } = appRepo();
+  git(root, 'branch', '--unset-upstream');
+  const head = git(root, 'rev-parse', 'HEAD');
+  const calls = fakeGh(readyRoutes(head));
+  let reran = 0;
+  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall }, review: async () => (reran++, { ok: true, data: {} }), evidence: async () => (reran++, { ok: true, data: {} }) });
+  expect(r.ok).toBe(false);
+  expect((r.data as { error: string }).error).toBe('kit commit not pushed');
+  expect(reran).toBe(0);
+  expect(calls().some((c) => c.startsWith('pr ready'))).toBe(false);
+});
+
+test('ready and review share one reviewer default (HH_REVIEWER)', () => {
+  const was = process.env.HH_REVIEWER;
+  process.env.HH_REVIEWER = 'other-bot';
+  expect(defaultReviewer()).toBe('other-bot');
+  delete process.env.HH_REVIEWER;
+  expect(defaultReviewer()).toBe('piekstra-dev');
+  if (was) process.env.HH_REVIEWER = was;
 });

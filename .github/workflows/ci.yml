@@ -35,6 +35,8 @@ jobs:
   # package.json stays 0.0.0; the tarball is packed with the release's version.
   release:
     needs: test
+    # A manual dispatch from a branch must not tag or publish it.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

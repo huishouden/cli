@@ -4,7 +4,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Ctx } from '../registry';
-import { repoAt, type Repo } from './repo';
+import { currentPr, currentPrAt, repoAt, type PullRequest, type Repo } from './repo';
 import { compare } from './semver';
 import { sh } from './sh';
 import { latestKitTag } from './kit';
@@ -149,4 +149,9 @@ export function syncedRepo(ctx: Ctx, push: boolean, deps?: KitSyncDeps): { repo:
   const kit = kitSync(repo, { skip: !!ctx.flags['no-bump-kit'], push, log: ctx.log }, deps);
   if (kit.status === 'bumped') repo = repoAt(ctx.cwd);
   return { repo, kit };
+}
+
+/** The PR after the sync: waits for GitHub to show the kit commit as its head when it was pushed. */
+export async function prAfterSync(repo: Repo, kit: KitSyncResult, number: string | undefined): Promise<PullRequest | null> {
+  return kit.status === 'bumped' && kit.pushed ? currentPrAt(repo, number, repo.head) : currentPr(repo, number);
 }

@@ -4,15 +4,15 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { flagString, register } from '../../registry';
-import { currentPr, currentPrAt, scratchDir } from '../../lib/repo';
-import { syncedRepo } from '../../lib/kitbump';
+import { scratchDir } from '../../lib/repo';
+import { prAfterSync, syncedRepo } from '../../lib/kitbump';
 
 import { has, sh } from '../../lib/sh';
-import { headReview, openBlocking, parseRollup, markFromReview, cacheDir, upsertReviewComment, writeReviewRecord, reviewThreads } from '../../lib/review';
+import { defaultReviewer, headReview, openBlocking, parseRollup, markFromReview, cacheDir, upsertReviewComment, writeReviewRecord, reviewThreads } from '../../lib/review';
 export { openBlocking, parseRollup } from '../../lib/review';
 
 const PROFILE = 'reviewer';
-const REVIEWER = process.env.HH_REVIEWER ?? 'piekstra-dev';
+const REVIEWER = defaultReviewer();
 const REVIEWERS_REPO = 'huishouden/cr-reviewers';
 
 export function reviewersPath(): string {
@@ -77,7 +77,7 @@ register({
   async run(ctx) {
     if (!has('cr')) return { ok: false, data: { error: 'cr not installed' }, text: 'cr (codereview-cli) is not installed.' };
     const { repo, kit } = syncedRepo(ctx, true);
-    const pr = kit.status === 'bumped' ? await currentPrAt(repo, flagString(ctx.flags, 'pr'), repo.head) : currentPr(repo, flagString(ctx.flags, 'pr'));
+    const pr = await prAfterSync(repo, kit, flagString(ctx.flags, 'pr'));
     if (!pr) return { ok: false, data: { error: 'no pull request' }, text: 'No PR for this branch (gh pr create --draft).' };
     const agents = ensureReviewers(ctx.log);
     const out = join(scratchDir(repo), `cr-${pr.number}.json`);

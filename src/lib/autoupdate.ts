@@ -27,6 +27,8 @@ export interface AutoUpdateOptions {
   latest?: () => string;
   /** Installs the tag; resolves to the installer's exit code. */
   install?: (tag: string) => Promise<number>;
+  /** Progress for people (stderr). */
+  log?: (line: string) => void;
   /** Runs the command again on the new version; returns its exit code. */
   reexec?: (argv: string[]) => number;
 }
@@ -44,8 +46,14 @@ export async function autoUpdate(o: AutoUpdateOptions): Promise<AutoUpdate> {
   if (on(env.HH_NO_AUTO_UPDATE)) return { status: 'skipped', reason: 'opt-out' };
   if (o.sourceCheckout) return { status: 'skipped', reason: 'source-checkout' };
   const file = join(o.dir, 'self-update');
+  let last = NaN;
   try {
-    if (existsSync(file) && now - Number(readFileSync(file, 'utf8').trim()) < SIX_HOURS_MS) return { status: 'skipped', reason: 'recent' };
+    if (existsSync(file)) last = Number(readFileSync(file, 'utf8').trim());
+  } catch {
+    /* unreadable: treated as never checked */
+  }
+  if (Number.isFinite(last) && now - last < SIX_HOURS_MS) return { status: 'skipped', reason: 'recent' };
+  try {
     mkdirSync(o.dir, { recursive: true });
     // Stamped before asking, so an offline machine does not wait on GitHub for every command.
     writeFileSync(file, String(now));
@@ -60,7 +68,7 @@ export async function autoUpdate(o: AutoUpdateOptions): Promise<AutoUpdate> {
   }
   if (!isOutdated(o.version, tag)) return { status: 'current' };
   const to = tag.slice(1);
-  console.error(`hh ${o.version} → ${to}: updating`);
+  (o.log ?? console.error)(`hh ${o.version} → ${to}: updating`);
   let code: number;
   try {
     code = await (o.install ?? ((t) => stream(installCommand(t), { json: true })))(tag);

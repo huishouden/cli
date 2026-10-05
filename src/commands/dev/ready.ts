@@ -3,10 +3,10 @@
 // evidence are redone for the new head. No version: CI tags and releases on merge to main.
 import { find, flagString, register, type Ctx, type Result } from '../../registry';
 import { latestEvidence } from '../../lib/evidence';
-import { currentPr, currentPrAt, fetchBase } from '../../lib/repo';
+import { fetchBase } from '../../lib/repo';
 import { shOk } from '../../lib/sh';
-import { syncedRepo, type KitSyncDeps } from '../../lib/kitbump';
-import { headReview, issueComments, judgeReview, reviewThreads } from '../../lib/review';
+import { prAfterSync, syncedRepo, type KitSyncDeps } from '../../lib/kitbump';
+import { defaultReviewer, headReview, issueComments, judgeReview, reviewThreads } from '../../lib/review';
 
 export interface Check {
   name: string;
@@ -23,16 +23,19 @@ export interface ReadyDeps {
 export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result> {
   const dry = !!ctx.flags['dry-run'];
   const { repo, kit } = syncedRepo(dry ? { ...ctx, flags: { ...ctx.flags, 'no-bump-kit': true } } : ctx, true, deps.kit);
+  if (kit.status === 'bumped' && !kit.pushed) {
+    return { ok: false, data: { error: 'kit commit not pushed', kit }, text: `The kit bump (chore: kit ${kit.to}) is committed locally but not pushed: push the branch, then run hh dev ready again.` };
+  }
   fetchBase(repo);
   const prFlag = flagString(ctx.flags, 'pr');
-  const pr = kit.status === 'bumped' ? await currentPrAt(repo, prFlag, repo.head) : currentPr(repo, prFlag);
+  const pr = await prAfterSync(repo, kit, prFlag);
   if (!pr) return { ok: false, data: { error: 'no pull request' }, text: 'No PR for this branch.' };
   const head = pr.headRefOid;
   const checks: Check[] = [];
   const actions: string[] = [];
   if (kit.status === 'bumped') {
     // The head moved: the review and evidence on the PR are for the old one. Redo both.
-    actions.push(`kit ${kit.from} → ${kit.to} committed${kit.pushed ? ' and pushed' : ' (not pushed)'}`);
+    actions.push(`kit ${kit.from} → ${kit.to} committed and pushed`);
     const prior = latestEvidence(repo, pr.number);
     const sub = { ...ctx, flags: { ...ctx.flags, 'no-bump-kit': true } };
     const review = await (deps.review ?? find('dev', 'review')!.run)(sub);
@@ -44,7 +47,7 @@ export async function readyFlow(ctx: Ctx, deps: ReadyDeps = {}): Promise<Result>
   // 1. A review of the head commit: the reviewer account's with no Blocking or Major thread open, or
   // (a clean review posts nothing as the reviewer) the hh-review marker for the head commit from
   // the PR author or the reviewer.
-  const reviewer = flagString(ctx.flags, 'reviewer') ?? 'piekstra-dev';
+  const reviewer = flagString(ctx.flags, 'reviewer') ?? defaultReviewer();
   const review = headReview(repo, pr.number, head, reviewer);
   const verdict = judgeReview({ head, reviewer, author: pr.author?.login, review, threads: () => reviewThreads(repo, pr.number), comments: issueComments(repo, pr.number) });
   checks.push({ name: 'review', ok: verdict.ok, detail: verdict.detail });

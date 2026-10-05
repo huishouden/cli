@@ -3,8 +3,8 @@
 // otherwise; --staging / --local override. Never production.
 import { register } from '../../registry';
 import { evidenceDir, post, save, type Evidence } from '../../lib/evidence';
-import { changedFiles, currentPr, currentPrAt, fetchBase } from '../../lib/repo';
-import { syncedRepo } from '../../lib/kitbump';
+import { changedFiles, fetchBase } from '../../lib/repo';
+import { prAfterSync, syncedRepo } from '../../lib/kitbump';
 
 import { runLocal, runStaging } from '../../lib/runs';
 
@@ -46,7 +46,7 @@ register({
     let posted: string | undefined;
     if (!ctx.flags['no-post']) {
       const prFlag = typeof ctx.flags.pr === 'string' ? ctx.flags.pr : undefined;
-      const pr = kit.status === 'bumped' ? await currentPrAt(repo, prFlag, repo.head) : currentPr(repo, prFlag);
+      const pr = await prAfterSync(repo, kit, prFlag);
       if (!pr) return { ok: false, data: { ...evidence, error: 'no pull request for this branch' }, text: 'No PR for this branch: open a draft (gh pr create --draft) and run again, or pass --no-post.' };
       if (pr.headRefOid !== repo.head) return { ok: false, data: { ...evidence, error: 'PR head differs' }, text: `The PR's head is ${pr.headRefOid.slice(0, 7)}, this checkout ${repo.head.slice(0, 7)}: push first.` };
       posted = post(repo, pr.number, evidence);
