@@ -85,7 +85,7 @@ beforeAll(async () => {
   await seed('households/h1/bills/b1', { label: 'Water bill', kind: 'utility', source: 'manual', due: new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10), amountDue: { amount: '42.00', currency: 'USD' }, status: 'due', createdAt: 1, by: SAM });
   await seed('households/h1/contacts/c1', { name: 'Dr. Quiet', role: 'Doctor', private: true, apps: ['health'], createdAt: 1, by: SAM });
   await seed('households/h1/contacts/c2', { name: 'Pat Plumber', role: 'Plumber', private: false, apps: ['home'], createdAt: 1, by: SAM });
-  await seed('households/h1/healthPeople/nan', { name: 'Nan', carers: [SAM], readers: [SAM], allergies: 'Penicillin', notes: 'Hard of hearing', createdAt: 1, by: SAM });
+  await seed('households/h1/healthPeople/nan', { name: 'Nan', carers: [SAM], readers: [SAM], allergies: 'Exampleillin', notes: 'Prefers mornings', createdAt: 1, by: SAM });
   await seed('households/h1/healthPeople/nan/meds/m1', { personId: 'nan', name: 'Examplamine', strength: '10 mg', asNeeded: false, times: ['08:00'], everyDays: 1, startDate: '2031-01-01', escalateMinutes: 30, remind: true, createdAt: 1, by: SAM });
   await seed('households/h1/lists/groceries', { name: 'Groceries', icon: 'cart', sortOrder: 0 });
   await seed('households/h1/lists/chores', { name: 'Chores & Notes', icon: 'chores', sortOrder: 1 });
@@ -157,7 +157,7 @@ describe('hh data, as the person, under the rules', () => {
       for (const argv of [['health', 'people'], ['health', 'medicines', 'Nan'], ['health', 'dose', 'Nan', 'Examplamine', '--confirm']]) {
         const r = await hh(who, 'data', ...argv);
         // Her name only where they didn't type it: "No one named Nan" echoes the question, not her record.
-        for (const word of ['Examplamine', 'Penicillin', 'Hard of hearing', ...(argv.includes('Nan') ? [] : ['Nan'])]) expect([who, ...argv, word, (r.out + r.err).includes(word)]).toEqual([who, ...argv, word, false]);
+        for (const word of ['Examplamine', 'Exampleillin', 'Prefers mornings', ...(argv.includes('Nan') ? [] : ['Nan'])]) expect([who, ...argv, word, (r.out + r.err).includes(word)]).toEqual([who, ...argv, word, false]);
       }
     }
     expect((await read('households/h1/healthPeople/nan/doses/m1_2031-01-01T0800'))).toBeNull();
@@ -166,7 +166,7 @@ describe('hh data, as the person, under the rules', () => {
     const kid = await hh(KIM, 'data', 'health', 'people', '--json');
     expect(kid.json.text).toContain("isn't available to kids");
     expect(kid.json.data?.people ?? []).toEqual([]);
-    expect((await hh(SAM, 'data', 'health', 'medicines', 'Nan')).out).toContain('Penicillin');
+    expect((await hh(SAM, 'data', 'health', 'medicines', 'Nan')).out).toContain('Exampleillin');
   });
 
   test('bad arguments are refused before anything is read', async () => {

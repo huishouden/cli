@@ -20,7 +20,7 @@ export interface CredentialStore {
 }
 
 /** A sign-in is stored but can't be opened: the wrong or a missing HH_PASSPHRASE, a missing key file, a damaged file. */
-export type UnreadableReason = 'passphrase_wrong' | 'passphrase_missing' | 'passphrase_unexpected' | 'missing_key' | 'corrupt' | 'unavailable';
+export type UnreadableReason = 'legacy' | 'passphrase_wrong' | 'passphrase_missing' | 'passphrase_unexpected' | 'missing_key' | 'corrupt' | 'unavailable';
 
 export class CredentialUnreadable extends Error {
   constructor(
@@ -32,6 +32,7 @@ export class CredentialUnreadable extends Error {
         passphrase_wrong: `a sign-in is stored in ${where}, but HH_PASSPHRASE doesn't open it: set the one it was saved with, or hh login again`,
         passphrase_missing: `a sign-in is stored in ${where} with a passphrase: set HH_PASSPHRASE to open it, or hh login again`,
         passphrase_unexpected: `a sign-in is stored in ${where} without a passphrase: unset HH_PASSPHRASE to open it, or hh login again`,
+        legacy: `the sign-in in ${where} is from an older hh and can't be used: hh login again`,
         missing_key: `a sign-in is stored in ${where}, but its key file is gone: hh login again`,
         corrupt: `the sign-in in ${where} is damaged: hh login again`,
         unavailable: `the ${where} could not be read (locked, or access was refused): unlock it and try again`,
@@ -200,10 +201,23 @@ export function saveCredential(account: string, secret: string, stores = credent
 
 /** The first stored sign-in; a stored one that can't be opened throws `CredentialUnreadable`. */
 export function readCredential(account: string, stores = credentialStores()): { secret: string; store: CredentialStore } | null {
+  // A keychain that can't be reached (no Secret Service over SSH, a locked login keychain) may not
+  // be where the sign-in is: the save may have fallen back to the file. Look there before saying so.
+  let unreachable: CredentialUnreadable | undefined;
   for (const store of stores) {
-    const secret = store.read(account);
+    let secret: string | null;
+    try {
+      secret = store.read(account);
+    } catch (e) {
+      if (e instanceof CredentialUnreadable && e.reason === 'unavailable') {
+        unreachable ??= e;
+        continue;
+      }
+      throw e;
+    }
     if (secret) return { secret, store };
   }
+  if (unreachable) throw unreachable;
   return null;
 }
 

@@ -166,10 +166,18 @@ describe('where the sign-in is kept', () => {
     expect(readCredential('staging', [broken, file])!.secret).toBe('secret-value');
   });
 
+  test('a keychain that cannot be reached does not hide a sign-in the file holds; alone, it is reported', () => {
+    const file = encryptedFile(join(dir, 'e'), '');
+    const unreachable: CredentialStore = { name: 'libsecret', save: () => { throw new Error('no D-Bus'); }, read: () => { throw new CredentialUnreadable('unavailable', 'libsecret keyring'); }, delete: () => false };
+    saveCredential('staging', 'secret-value', [unreachable, file]);
+    expect(readCredential('staging', [unreachable, file])!.secret).toBe('secret-value');
+    expect(() => readCredential('production', [unreachable, file])).toThrow('could not be read');
+  });
+
   test("hh 1.2.0's bare token is not a sign-in (it lacks the project): hh login again", () => {
     const file = encryptedFile(join(dir, 'd'), '');
     file.save('staging', REFRESH);
-    expect(loadSignIn('staging', [file])).toBeNull();
+    expect(() => loadSignIn('staging', [file])).toThrow('from an older hh');
   });
 });
 

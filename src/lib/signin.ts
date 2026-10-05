@@ -9,7 +9,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { cliConnectUrl, CLI_TOKEN_PATH, pkceChallenge } from '@huishouden/pwa-kit/signin-handoff';
 import { exchangeRefreshToken, FirebaseAuthError, type AuthRestOptions } from '@huishouden/pwa-kit/firebase-auth-rest';
-import { CredentialUnreadable, deleteCredential, readCredential, saveCredential, type CredentialStore } from './credentials';
+import { CredentialUnreadable, type UnreadableReason, deleteCredential, readCredential, saveCredential, type CredentialStore } from './credentials';
 
 export type SiteName = 'production' | 'staging';
 
@@ -155,13 +155,14 @@ export function storeSignIn(site: SiteName, credential: Credential, stores?: Cre
 export function loadSignIn(site: SiteName, stores?: CredentialStore[]): { credential: Credential; store: CredentialStore } | null {
   const found = readCredential(account(site), stores);
   if (!found) return null;
+  let credential: Credential | null = null;
   try {
-    const credential = JSON.parse(found.secret) as Credential;
-    return typeof credential.refreshToken === 'string' ? { credential, store: found.store } : null;
+    credential = JSON.parse(found.secret) as Credential;
   } catch {
-    // A bare token from hh 1.2.0's login, which no longer works without its project and key.
-    return null;
+    // hh 1.2.0 kept a bare token, which doesn't work without its project and key.
   }
+  if (!credential || typeof credential.refreshToken !== 'string') throw new CredentialUnreadable('legacy', found.store.name);
+  return { credential, store: found.store };
 }
 
 export const forgetSignIn = (site: SiteName, stores?: CredentialStore[]) => deleteCredential(account(site), stores);
@@ -180,7 +181,7 @@ export class NotSignedIn extends Error {
   /** Why, for `--json`: none stored, the sign-in ended, or a stored one that can't be opened (CredentialUnreadable's reason). */
   constructor(
     message: string,
-    readonly reason: string = 'none',
+    readonly reason: UnreadableReason | 'none' | 'ended' = 'none',
   ) {
     super(message);
   }
