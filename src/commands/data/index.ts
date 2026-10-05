@@ -31,6 +31,7 @@ export const DATA_COMMANDS: readonly DataCommand[] = [
   { name: 'pet today', tool: 'pet_today', positional: ['pet'] },
   { name: 'pet feeding', tool: 'pet_log_feeding', positional: ['pet'] },
   { name: 'pet dose', tool: 'pet_log_dose', positional: ['pet', 'medicine'] },
+  { name: 'pet outing', tool: 'pet_log_outing', positional: ['pet'] },
   { name: 'home upkeep', tool: 'home_upkeep_due' },
   { name: 'home event', tool: 'home_add_event', positional: ['title'] },
   { name: 'appointment add', tool: 'add_appointment', positional: ['app', 'title', 'start'] },
