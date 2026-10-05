@@ -24,6 +24,11 @@ register({
     const to = typeof ctx.flags.to === 'string' ? ctx.flags.to : latestKitTag();
     if (!isExactTag(to)) return { ok: false, data: { error: `--to must be an exact tag like v0.99.0, got ${to}` }, text: `--to must be an exact tag like v0.99.0, got ${to}` };
     const from = pin.tag;
+    const files = ['package.json', 'bun.lock', '.github/workflows'].filter((p) => existsSync(join(repo.root, p)));
+    if (sh(['git', 'status', '--porcelain', '--', ...files], { cwd: repo.root }).stdout.trim()) {
+      const error = `${files.join(', ')} have uncommitted changes: commit or stash them first (a failed install is undone with git checkout)`;
+      return { ok: false, data: { error }, text: error };
+    }
     const spec = kitSpec(to, kitHasTarball(to));
     const written = writeKitBump(repo.root, to, spec)!;
     const workflows = written.workflows;
@@ -39,7 +44,7 @@ register({
       steps.push({ step, code });
       if (code !== 0) {
         // A bump whose install failed is undone; a failed lint or test leaves it for you to fix.
-        if (step === 'install') sh(['git', 'checkout', '--', ...['package.json', 'bun.lock', '.github/workflows'].filter((p) => existsSync(join(repo.root, p)))], { cwd: repo.root });
+        if (step === 'install') sh(['git', 'checkout', '--', ...files], { cwd: repo.root });
         break;
       }
     }
