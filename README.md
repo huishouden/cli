@@ -32,7 +32,8 @@ The author owns everything before `main`; pull requests run no hosted CI (pwa-ki
 
 `hh dev bump-kit` moves `@huishouden/pwa-kit` and the `huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z`
 workflow references to the kit's latest exact tag together and runs lint and tests: do it in any
-repo you touch. hh itself warns once a day when a newer release exists; `hh self-update` installs it.
+repo you touch. hh itself warns once a day when a newer release exists (not in CI, or with
+`HH_NO_UPDATE_CHECK` set); `hh self-update` installs it.
 
 ## Signing in
 

@@ -34,6 +34,8 @@ export interface Command {
   details?: string;
   /** Flags that take a value (`--name value`); the rest are switches. */
   valued?: readonly string[];
+  /** `false`: the command is not preceded by the once-a-day "hh is behind" check (self-update). */
+  updateCheck?: false;
   run(ctx: Ctx): Promise<Result>;
 }
 

@@ -86,13 +86,13 @@ register({
   name: 'self-update',
   summary: 'Install the latest hh release (an exact tag, found with gh release view)',
   usage: 'hh self-update [--json]',
+  updateCheck: false,
   async run(ctx) {
     const from = pkg.version;
     const tag = latestReleaseTag();
     if (!isOutdated(from, tag)) return { ok: true, data: { from, latest: tag, updated: false }, text: `hh ${from} is the latest (${tag})` };
     ctx.log(`hh ${from} → ${tag}`);
-    // Bun caches a git dependency by its ref; remove first so the exact tag is fetched fresh.
-    sh(['bun', 'remove', '-g', '@huishouden/cli']);
+    // The tag is exact and never moves, so bun's cache for it is never stale: no remove first.
     const code = await stream(installCommand(tag), { json: ctx.json });
     return code === 0
       ? { ok: true, data: { from, latest: tag, updated: true }, text: `hh ${from} → ${tag}` }

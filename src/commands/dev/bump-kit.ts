@@ -7,6 +7,7 @@ import { register } from '../../registry';
 import { hasScript, repoAt } from '../../lib/repo';
 import { stream } from '../../lib/sh';
 import { latestKitTag } from '../../lib/kit';
+import { isExactTag } from '../../lib/update';
 
 const WORKFLOW_REF = /(huishouden\/pwa-kit\/\.github\/workflows\/[\w.-]+\.ya?ml@)(\S+?)(?=["'\s]|$)/g;
 
@@ -39,6 +40,7 @@ register({
     const m = /("@huishouden\/pwa-kit"\s*:\s*"[^"#]*#)(v[\d.]+)(")/.exec(text);
     if (!m) return { ok: false, data: { error: 'no @huishouden/pwa-kit pinned to a tag' }, text: 'package.json pins no @huishouden/pwa-kit tag' };
     const to = typeof ctx.flags.to === 'string' ? ctx.flags.to : latestKitTag();
+    if (!isExactTag(to)) return { ok: false, data: { error: `--to must be an exact tag like v0.99.0, got ${to}` }, text: `--to must be an exact tag like v0.99.0, got ${to}` };
     const from = m[2];
     const workflows = bumpWorkflowRefs(repo.root, to);
     if (from === to) return { ok: true, data: { from, to, changed: workflows.length > 0, workflows }, text: workflows.length ? `pwa-kit is already ${to}; workflow refs now ${to}: ${workflows.join(', ')}` : `pwa-kit is already ${to}` };
