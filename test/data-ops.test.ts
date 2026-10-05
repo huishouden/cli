@@ -5,8 +5,8 @@ import { DATA_COMMANDS, usageFor } from '../src/commands/data';
 import { checkSecret, setSecret } from '../src/commands/ops/secret-set';
 import { refusal } from '../src/commands/ops/roles';
 import { report } from '../src/commands/ops/auth-domains';
-import { provisionLines } from '../src/commands/ops/monitoring';
-import { stagingSites } from '../src/lib/suite';
+import { newRun, provisionLines } from '../src/commands/ops/monitoring';
+import { parseApps, stagingSites } from '../src/lib/suite';
 import { parseArgs, resolve } from '../src/registry';
 import '../src/commands/ops';
 
@@ -91,6 +91,23 @@ describe('hh ops', () => {
     const r = report('production', ['huishouden-piekstra.web.app', 'old.example.com'], []);
     expect(r.missing).toEqual(['huishouden-piekstra.firebaseapp.com']);
     expect(r.extra).toEqual(['old.example.com']);
+  });
+
+  test('monitoring: the run this dispatch started, never someone else\'s or an older one', () => {
+    const since = Date.parse('2026-10-05T05:00:00Z');
+    const runs = [
+      { databaseId: 1, createdAt: '2026-10-05T04:00:00Z', actor: 'me' },
+      { databaseId: 2, createdAt: '2026-10-05T05:00:01Z', actor: 'someone-else' },
+      { databaseId: 3, createdAt: '2026-10-05T05:00:02Z', actor: 'me' },
+    ];
+    expect(newRun(new Set([1]), runs, 'me', since)).toBe(3);
+    expect(newRun(new Set([1, 3]), runs, 'me', since)).toBeNull();
+  });
+
+  test('apps.json is checked before it is used', () => {
+    expect(parseApps([{ repo: 'pet', site: 'huishouden-pet', name: 'Pet' }])).toMatchObject([{ repo: 'pet', site: 'huishouden-pet' }]);
+    expect(() => parseApps([{ site: 'huishouden-pet' }])).toThrow('apps.json: 0.repo');
+    expect(() => parseApps([{ repo: 'pet', site: 'Bad Site' }])).toThrow('0.site');
   });
 
   test("monitoring: the provisioning step's lines, without GitHub's prefixes or the step's env", () => {

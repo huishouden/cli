@@ -20,6 +20,7 @@ register({
   name: 'ready',
   summary: 'Check review, evidence and version for the head commit, then mark the draft ready',
   usage: 'hh dev ready [--pr=N] [--reviewer=piekstra-dev] [--dry-run] [--json]',
+  valued: ['pr', 'reviewer'],
   async run(ctx) {
     const repo = repoAt(ctx.cwd);
     fetchBase(repo);

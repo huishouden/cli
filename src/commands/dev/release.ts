@@ -13,6 +13,7 @@ register({
   name: 'release',
   summary: 'Bump package.json and write the CHANGELOG.md section from the commits since the last tag',
   usage: 'hh dev release [--level=major|minor|patch] [--commit] [--dry-run] [--json]',
+  valued: ['level'],
   async run(ctx) {
     const repo = repoAt(ctx.cwd);
     fetchBase(repo);

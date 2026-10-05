@@ -9,7 +9,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { cliConnectUrl, CLI_TOKEN_PATH, pkceChallenge } from '@huishouden/pwa-kit/signin-handoff';
 import { exchangeRefreshToken, FirebaseAuthError, type AuthRestOptions } from '@huishouden/pwa-kit/firebase-auth-rest';
-import { deleteCredential, readCredential, saveCredential, type CredentialStore } from './credentials';
+import { CredentialUnreadable, deleteCredential, readCredential, saveCredential, type CredentialStore } from './credentials';
 
 export type SiteName = 'production' | 'staging';
 
@@ -180,8 +180,14 @@ export class NotSignedIn extends Error {}
 
 /** A fresh ID token for the signed-in person, or why there is none (in words to act on). */
 export async function signedIn(site: Site, stores?: CredentialStore[]): Promise<{ credential: Credential; token: string; store: CredentialStore }> {
-  const loaded = loadSignIn(site.name, stores);
   const again = `hh login${site.name === 'staging' ? ' --staging' : ''}`;
+  let loaded: ReturnType<typeof loadSignIn>;
+  try {
+    loaded = loadSignIn(site.name, stores);
+  } catch (e) {
+    if (e instanceof CredentialUnreadable) throw new NotSignedIn(e.message);
+    throw e;
+  }
   if (!loaded) throw new NotSignedIn(`not signed in to ${site.name}: ${again}`);
   try {
     const { token } = await exchangeRefreshToken(authOptions(loaded.credential), loaded.credential.refreshToken);

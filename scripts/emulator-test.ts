@@ -16,11 +16,22 @@ const free = () =>
 
 const dir = join(import.meta.dir, '..', 'test', '.emulator');
 mkdirSync(dir, { recursive: true });
-const rules = process.env.RULES_FILE ? readFileSync(process.env.RULES_FILE, 'utf8') : await (await fetch('https://raw.githubusercontent.com/huishouden/rules/main/firestore.rules')).text();
+async function rulesText(): Promise<string> {
+  if (process.env.RULES_FILE) return readFileSync(process.env.RULES_FILE, 'utf8');
+  const ref = process.env.RULES_REF ?? 'main';
+  const res = await fetch(`https://raw.githubusercontent.com/huishouden/rules/${ref}/firestore.rules`);
+  if (!res.ok) throw new Error(`rules: ${res.status} for huishouden/rules@${ref}`);
+  console.log(`rules: huishouden/rules@${ref}`);
+  return res.text();
+}
+const rules = await rulesText();
 writeFileSync(join(dir, 'firestore.rules'), rules);
 const [auth, firestore, hub, logging] = [await free(), await free(), await free(), await free()];
 writeFileSync(join(dir, 'firebase.json'), JSON.stringify({ firestore: { rules: 'firestore.rules' }, emulators: { auth: { port: auth }, firestore: { port: firestore }, hub: { port: hub }, logging: { port: logging }, ui: { enabled: false }, singleProjectMode: true } }));
-const p = Bun.spawn(['npx', '--yes', 'firebase-tools@15', 'emulators:exec', '--config', join(dir, 'firebase.json'), '--only', 'auth,firestore', '--project', 'demo-hh-cli', `bun test ./test/${process.env.HH_EMULATOR_TEST ?? 'data'}.emulator.ts`], {
+// firebase-tools from this repo's lockfile; the emulators' logs go to test/.emulator (ignored).
+const firebase = join(import.meta.dir, '..', 'node_modules', '.bin', 'firebase');
+const p = Bun.spawn([firebase, 'emulators:exec', '--config', join(dir, 'firebase.json'), '--only', 'auth,firestore', '--project', 'demo-hh-cli', `bun test ${join(import.meta.dir, '..', 'test', `${process.env.HH_EMULATOR_TEST ?? 'data'}.emulator.ts`)}`], {
+  cwd: dir,
   stdout: 'inherit',
   stderr: 'inherit',
   env: { ...process.env, HH_EMULATOR_AUTH_PORT: String(auth), HH_EMULATOR_FIRESTORE_PORT: String(firestore) },

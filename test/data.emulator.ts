@@ -16,6 +16,7 @@ const FIRESTORE = `http://127.0.0.1:${process.env.HH_EMULATOR_FIRESTORE_PORT}/v1
 const DOCS = `${FIRESTORE}/projects/${PROJECT}/databases/(default)/documents`;
 const SAM = 'sam@example.com';
 const ALEX = 'alex@example.com';
+const KIM = 'kim@example.com';
 
 const value = (v: unknown): unknown =>
   typeof v === 'string' ? { stringValue: v } : typeof v === 'number' ? { integerValue: String(v) } : typeof v === 'boolean' ? { booleanValue: v } : Array.isArray(v) ? { arrayValue: { values: v.map(value) } } : { mapValue: { fields: Object.fromEntries(Object.entries(v as object).map(([k, x]) => [k, value(x)])) } };
@@ -41,6 +42,14 @@ async function account(email: string): Promise<{ uid: string; refreshToken: stri
 }
 
 const homes: Record<string, string> = {};
+const refreshTokens: Record<string, string> = {};
+
+/** A write as `who` straight to Firestore, past hh's own checks: what the rules alone decide. */
+async function writeAs(who: string, path: string, mask: string, data: Record<string, unknown>): Promise<number> {
+  const t = (await (await fetch(`${AUTH}/securetoken.googleapis.com/v1/token?key=k`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshTokens[who] }) })).json()) as { id_token: string };
+  const res = await fetch(`${DOCS}/${path}?updateMask.fieldPaths=${encodeURIComponent(mask)}`, { method: 'PATCH', headers: { Authorization: `Bearer ${t.id_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: (value(data) as { mapValue: { fields: object } }).mapValue.fields }) });
+  return res.status;
+}
 
 /** `hh …` as `who`, in its own process, with that person's sign-in store. */
 async function hh(who: string, ...argv: string[]): Promise<{ code: number; out: string; err: string; json: Record<string, any> }> {
@@ -66,12 +75,18 @@ async function hh(who: string, ...argv: string[]): Promise<{ code: number; out: 
 }
 
 beforeAll(async () => {
-  for (const email of [SAM, ALEX]) {
+  for (const email of [SAM, ALEX, KIM]) {
     const { uid, refreshToken } = await account(email);
+    refreshTokens[email] = refreshToken;
     homes[email] = mkdtempSync(join(tmpdir(), 'hh-emu-'));
     storeSignIn('production', { refreshToken, uid, email, projectId: PROJECT, apiKey: 'emulator-key', siteUrl: 'https://huishouden-staging.web.app', timeZone: 'America/New_York', savedAt: Date.now() }, [encryptedFile(join(homes[email], 'hh'))]);
   }
-  await seed('households/h1', { name: 'Maple Street', members: [SAM, ALEX], joined: [SAM, ALEX], roles: { [ALEX]: 'helper' }, createdAt: 1 });
+  await seed('households/h1', { name: 'Maple Street', members: [SAM, ALEX, KIM], joined: [SAM, ALEX, KIM], roles: { [ALEX]: 'helper', [KIM]: 'kid' }, createdAt: 1 });
+  await seed('households/h1/bills/b1', { label: 'Water bill', kind: 'utility', source: 'manual', due: new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10), amountDue: { amount: '42.00', currency: 'USD' }, status: 'due', createdAt: 1, by: SAM });
+  await seed('households/h1/contacts/c1', { name: 'Dr. Quiet', role: 'Doctor', private: true, apps: ['health'], createdAt: 1, by: SAM });
+  await seed('households/h1/contacts/c2', { name: 'Pat Plumber', role: 'Plumber', private: false, apps: ['home'], createdAt: 1, by: SAM });
+  await seed('households/h1/healthPeople/nan', { name: 'Nan', carers: [SAM], readers: [SAM], createdAt: 1, by: SAM });
+  await seed('households/h1/healthPeople/nan/meds/m1', { personId: 'nan', name: 'Examplamine', strength: '10 mg', asNeeded: false, times: ['08:00'], everyDays: 1, startDate: '2031-01-01', escalateMinutes: 30, remind: true, createdAt: 1, by: SAM });
   await seed('households/h1/lists/groceries', { name: 'Groceries', icon: 'cart', sortOrder: 0 });
   await seed('households/h1/lists/chores', { name: 'Chores & Notes', icon: 'chores', sortOrder: 1 });
 });
@@ -116,10 +131,35 @@ describe('hh data, as the person, under the rules', () => {
     expect(b.json.data.repeated).toBe(true);
   });
 
-  test("the rules' refusal is said, and exits 1: a helper sees no bills", async () => {
-    const r = await hh(ALEX, 'data', 'bills', 'due');
-    expect(r.code).toBe(1);
-    expect(r.out + r.err).not.toContain('Something went wrong');
+  test('bills: an admin sees the amount; a helper and a kid get a refusal and nothing of it', async () => {
+    const sam = await hh(SAM, 'data', 'bills', 'due');
+    expect(sam.out).toContain('Water bill');
+    for (const who of [ALEX, KIM]) {
+      const r = await hh(who, 'data', 'bills', 'due');
+      expect([who, r.code]).toEqual([who, 1]);
+      expect(r.out + r.err).not.toContain('Water bill');
+      expect(r.out + r.err).not.toContain('42');
+    }
+  });
+
+  test('contacts: a private one only for admins and members', async () => {
+    expect((await hh(SAM, 'data', 'contacts', 'search', 'Quiet')).out).toContain('Dr. Quiet');
+    for (const who of [ALEX, KIM]) {
+      const r = await hh(who, 'data', 'contacts', 'search', 'Quiet');
+      expect(r.out + r.err).not.toContain('Dr. Quiet');
+      expect((await hh(who, 'data', 'contacts', 'search', 'Plumber')).out).toContain('Pat Plumber');
+    }
+  });
+
+  test("Health: Nan's carer sees her; a helper who isn't one and a kid get nothing of her", async () => {
+    expect((await hh(SAM, 'data', 'health', 'medicines', 'Nan')).out).toContain('Examplamine');
+    for (const who of [ALEX, KIM]) {
+      for (const argv of [['health', 'people'], ['health', 'medicines', 'Nan'], ['health', 'dose', 'Nan', 'Examplamine', '--confirm']]) {
+        const r = await hh(who, 'data', ...argv);
+        expect([who, ...argv, (r.out + r.err).includes('Examplamine')]).toEqual([who, ...argv, false]);
+      }
+    }
+    expect((await read('households/h1/healthPeople/nan/doses/m1_2031-01-01T0800'))).toBeNull();
   });
 
   test('bad arguments are refused before anything is read', async () => {
@@ -132,7 +172,7 @@ describe('hh data, as the person, under the rules', () => {
 describe('hh ops roles', () => {
   test('lists the people and their roles', async () => {
     const r = await hh(ALEX, 'ops', 'roles', '--json');
-    expect(r.json).toMatchObject({ ok: true, you: 'helper', members: [{ email: SAM, role: 'admin', you: false }, { email: ALEX, role: 'helper', you: true }] });
+    expect(r.json).toMatchObject({ ok: true, you: 'helper', members: [{ email: SAM, role: 'admin', you: false }, { email: ALEX, role: 'helper', you: true }, { email: KIM, role: 'kid', you: false }] });
   });
 
   test('the admin sets a role through the rules; a helper cannot', async () => {
@@ -141,7 +181,7 @@ describe('hh ops roles', () => {
     expect(denied.out + denied.err).toContain('only an admin');
     const r = await hh(SAM, 'ops', 'roles', 'set', ALEX, 'kid', '--json');
     expect(r.json).toMatchObject({ ok: true, from: 'helper', to: 'kid' });
-    expect((await read('households/h1'))!.roles).toEqual({ [ALEX]: 'kid' });
+    expect((await read('households/h1'))!.roles).toEqual({ [ALEX]: 'kid', [KIM]: 'kid' });
     await hh(SAM, 'ops', 'roles', 'set', ALEX, 'helper');
   });
 
@@ -149,6 +189,21 @@ describe('hh ops roles', () => {
     const r = await hh(SAM, 'ops', 'roles', 'set', SAM, 'member');
     expect(r.code).toBe(1);
     expect(r.out + r.err).toContain('your own role');
+  });
+
+  test("the rules themselves refuse it, past hh's checks: a helper or kid making anyone admin, an admin changing their own role", async () => {
+    const before = (await read('households/h1'))!.roles;
+    expect(await writeAs(ALEX, 'households/h1', 'roles.`alex@example.com`', { roles: { [ALEX]: 'admin' } })).toBe(403);
+    expect(await writeAs(KIM, 'households/h1', 'roles.`kim@example.com`', { roles: { [KIM]: 'admin' } })).toBe(403);
+    expect(await writeAs(SAM, 'households/h1', 'roles.`sam@example.com`', { roles: { [SAM]: 'member' } })).toBe(403);
+    expect((await read('households/h1'))!.roles).toEqual(before);
+  });
+
+  test('setting one role writes only that entry', async () => {
+    const r = await hh(SAM, 'ops', 'roles', 'set', KIM, 'helper', '--json');
+    expect(r.json).toMatchObject({ ok: true, from: 'kid', to: 'helper' });
+    expect((await read('households/h1'))!.roles).toEqual({ [ALEX]: 'helper', [KIM]: 'helper' });
+    await hh(SAM, 'ops', 'roles', 'set', KIM, 'kid');
   });
 });
 

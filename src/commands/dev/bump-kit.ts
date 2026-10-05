@@ -12,6 +12,7 @@ register({
   name: 'bump-kit',
   summary: 'Move @huishouden/pwa-kit to its latest tag, install, lint and unit-test',
   usage: 'hh dev bump-kit [--to=vX.Y.Z] [--no-check] [--json]',
+  valued: ['to'],
   async run(ctx) {
     const repo = repoAt(ctx.cwd);
     const pkgPath = join(repo.root, 'package.json');

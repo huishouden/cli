@@ -75,7 +75,8 @@ register({
       if (why) return { ok: false, data: { household: here.id, email, role, error: why }, text: why };
       const before = householdRole(here, email);
       try {
-        await session.db.commit([{ path: `households/${here.id}`, merge: { roles: { ...(here.roles ?? {}), [email]: role } } }]);
+        // Only this person's entry (the field path roles.`<email>`): a role someone else changed meanwhile stays.
+        await session.db.commit([{ path: `households/${here.id}`, merge: { roles: { [email]: role } } }]);
       } catch (e) {
         if (e instanceof FirestoreError && e.code === 'permission-denied') return { ok: false, data: { household: here.id, email, role, error: 'permission-denied' }, text: "The household's rules refused it." };
         throw e;

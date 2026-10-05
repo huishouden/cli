@@ -74,7 +74,11 @@ export function detailsFor(c: DataCommand): string {
 
 for (const c of DATA_COMMANDS) {
   const tool = toolNamed(c.tool);
-  if (!tool) throw new Error(`hh data ${c.name}: no tool ${c.tool} in this pwa-kit`);
+  if (!tool) {
+    // A kit without this tool: this command says so; every other command still works.
+    register({ group: 'data', name: c.name, summary: `(needs a pwa-kit with ${c.tool})`, usage: `hh data ${c.name}`, run: async () => ({ ok: false, data: { error: 'tool_missing', tool: c.tool }, text: `This hh's pwa-kit has no ${c.tool}; update hh.` }) });
+    continue;
+  }
   register({
     group: 'data',
     name: c.name,

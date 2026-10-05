@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLI_TOKEN_PATH, isLoopbackRedirect, storeCliHandoff, takeCliHandoff, type HandoffStore } from '@huishouden/pwa-kit/signin-handoff';
-import { encryptedFile, readCredential, saveCredential, type CredentialStore } from '../src/lib/credentials';
+import { CredentialUnreadable, encryptedFile, keychainStore, libsecretStore, readCredential, saveCredential, securityAddCommand, type CredentialStore } from '../src/lib/credentials';
 import { loadSignIn, loopbackLogin, storeSignIn, type Credential, type Site } from '../src/lib/signin';
 
 // hh login against a stand-in connector that runs the kit's own hand-off (storeCliHandoff,
@@ -141,7 +141,7 @@ describe('where the sign-in is kept', () => {
     expect(statSync(join(dir, 'a', 'key')).mode & 0o777).toBe(0o600);
     expect(Bun.file(join(dir, 'a', 'sign-in-staging.enc')).size).toBeGreaterThan(0);
     rmSync(join(dir, 'a', 'key'));
-    expect(loadSignIn('staging', [file])).toBeNull();
+    expect(() => loadSignIn('staging', [file])).toThrow(CredentialUnreadable);
     expect(file.delete('staging')).toBe(true);
     expect(file.delete('staging')).toBe(false);
   });
@@ -150,7 +150,8 @@ describe('where the sign-in is kept', () => {
     const file = encryptedFile(join(dir, 'b'), 'correct horse');
     storeSignIn('production', credential, [file]);
     expect(await Bun.file(join(dir, 'b', 'sign-in-production.enc')).text()).not.toContain(REFRESH);
-    expect(loadSignIn('production', [encryptedFile(join(dir, 'b'), 'wrong')])).toBeNull();
+    expect(() => loadSignIn('production', [encryptedFile(join(dir, 'b'), 'wrong')])).toThrow("HH_PASSPHRASE doesn't open it");
+    expect(() => loadSignIn('production', [encryptedFile(join(dir, 'b'), '')])).toThrow("HH_PASSPHRASE doesn't open it");
     expect(loadSignIn('production', [encryptedFile(join(dir, 'b'), 'correct horse')])!.credential.email).toBe(WHO.email);
   });
 
@@ -159,7 +160,7 @@ describe('where the sign-in is kept', () => {
     const broken: CredentialStore = { name: 'macOS Keychain', save: () => { throw new Error('locked'); }, read: () => null, delete: () => false };
     const saved = saveCredential('staging', 'secret-value', [broken, file]);
     expect(saved.store.name).toBe('encrypted file');
-    expect(saved.warning).toContain('No OS keychain');
+    expect(saved.warning).toContain(`encrypted file under ${join(dir, 'c')}`);
     expect(readCredential('staging', [broken, file])!.secret).toBe('secret-value');
   });
 
@@ -167,5 +168,34 @@ describe('where the sign-in is kept', () => {
     const file = encryptedFile(join(dir, 'd'), '');
     file.save('staging', REFRESH);
     expect(loadSignIn('staging', [file])).toBeNull();
+  });
+});
+
+describe('the OS keychains, with a stand-in runner', () => {
+  const secret = JSON.stringify({ refreshToken: 'a"b\\c d{}', email: 'sam@example.com' });
+  const recorder = (code = 0, stdout = '') => {
+    const calls: { cmd: string[]; input?: string }[] = [];
+    return { calls, run: (cmd: string[], opts: { input?: string } = {}) => (calls.push({ cmd, input: opts.input }), { code, stdout, stderr: code ? 'denied' : '' }) };
+  };
+
+  test('macOS: the secret goes on stdin, quoted for security -i, never in argv', () => {
+    const r = recorder();
+    keychainStore(r.run).save('production', secret);
+    expect(r.calls[0].cmd).toEqual(['security', '-i']);
+    expect(r.calls[0].input).toBe(securityAddCommand('huishouden-hh', 'production', secret));
+    expect(r.calls[0].input).toBe('add-generic-password -U -s "huishouden-hh" -a "production" -w "{\\"refreshToken\\":\\"a\\\\\\"b\\\\\\\\c d{}\\",\\"email\\":\\"sam@example.com\\"}"\n');
+    for (const c of r.calls) expect(c.cmd.join(' ')).not.toContain('refreshToken');
+    expect(() => keychainStore(recorder(1).run).save('production', secret)).toThrow('keychain: denied');
+    expect(() => keychainStore(r.run).save('production', 'a\nb')).toThrow('line break');
+  });
+
+  test('libsecret: on stdin too; read and delete by service and account', () => {
+    const r = recorder(0, `${secret}\n`);
+    const store = libsecretStore(r.run);
+    store.save('staging', secret);
+    expect(r.calls[0]).toEqual({ cmd: ['secret-tool', 'store', '--label=Huishouden hh', 'service', 'huishouden-hh', 'account', 'staging'], input: secret });
+    expect(store.read('staging')).toBe(secret);
+    expect(store.delete('staging')).toBe(true);
+    expect(libsecretStore(recorder(1).run).read('staging')).toBeNull();
   });
 });

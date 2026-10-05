@@ -39,7 +39,7 @@ export function valuedFlags(tool: ToolDef): string[] {
 
 function coerce(raw: string | boolean, p: Property): unknown {
   const types = typesOf(p);
-  if (typeof raw === 'boolean') return types.includes('boolean') || !types.length ? raw : raw;
+  if (typeof raw === 'boolean') return raw;
   if (raw === 'null' && types.includes('null')) return null;
   if (types.includes('boolean') && /^(true|false|yes|no)$/i.test(raw)) return /^(true|yes)$/i.test(raw);
   if ((types.includes('number') || types.includes('integer')) && raw.trim() !== '' && Number.isFinite(Number(raw))) return Number(raw);

@@ -25,10 +25,25 @@ export function provisionLines(log: string): string[] {
     .filter((l) => l.trim() && !/^##\[(group|endgroup)\]/.test(l) && !/^(shell|env):|^\s+(NEW_RELIC_|ALERT_EMAIL|DRY_RUN|KIT)/.test(l));
 }
 
-/** The run this dispatch started: the newest workflow_dispatch run created at or after `since`. */
-function findRun(since: number): number | null {
-  const runs = JSON.parse(shOk(['gh', 'run', 'list', '-R', REPO, '--workflow', WORKFLOW, '--event', 'workflow_dispatch', '--limit', '5', '--json', 'databaseId,createdAt'])) as { databaseId: number; createdAt: string }[];
-  return runs.find((r) => Date.parse(r.createdAt) >= since - 5_000)?.databaseId ?? null;
+/** Recent dispatch runs of the workflow, with who started each. */
+const dispatchRuns = (): { databaseId: number; createdAt: string; actor?: string }[] =>
+  (JSON.parse(shOk(['gh', 'api', `repos/${REPO}/actions/workflows/${WORKFLOW}/runs?event=workflow_dispatch&per_page=20`])) as { workflow_runs: { id: number; created_at: string; actor?: { login: string } }[] }).workflow_runs.map((r) => ({
+    databaseId: r.id,
+    createdAt: r.created_at,
+    actor: r.actor?.login,
+  }));
+
+/**
+ * The run this dispatch started: a dispatch run that wasn't there before it, started by this gh
+ * account. Two dispatches by the same person in the same seconds are told apart by the order they
+ * appear; anyone else's never matches.
+ */
+export function newRun(before: ReadonlySet<number>, runs: { databaseId: number; createdAt: string; actor?: string }[], me: string, since: number): number | null {
+  return (
+    runs
+      .filter((r) => !before.has(r.databaseId) && Date.parse(r.createdAt) >= since - 5_000 && (!r.actor || r.actor === me))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))[0]?.databaseId ?? null
+  );
 }
 
 register({
@@ -37,13 +52,15 @@ register({
   summary: "Run the portal's monitoring workflow (New Relic) and summarize it",
   usage: 'hh ops monitoring [--dry-run] [--json]',
   async run(ctx) {
+    const me = shOk(['gh', 'api', 'user', '--jq', '.login']);
+    const before = new Set(dispatchRuns().map((r) => r.databaseId));
     const since = Date.now();
     shOk(['gh', 'workflow', 'run', WORKFLOW, '-R', REPO, '--ref', 'main', '-f', `dry-run=${ctx.flags['dry-run'] ? 'true' : 'false'}`]);
     ctx.log(`Started ${WORKFLOW} on ${REPO}${ctx.flags['dry-run'] ? ' (dry run)' : ''}; waiting for it.`);
     let id: number | null = null;
     for (let i = 0; i < 30 && !id; i++) {
       await Bun.sleep(2000);
-      id = findRun(since);
+      id = newRun(before, dispatchRuns(), me, since);
     }
     if (!id) return { ok: false, data: { error: 'run not found' }, text: `Started, but no run appeared within a minute: gh run list -R ${REPO} --workflow ${WORKFLOW}` };
     await stream(['gh', 'run', 'watch', String(id), '-R', REPO, '--interval', '10'], { json: true });

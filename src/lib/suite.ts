@@ -1,5 +1,6 @@
 // The suite's two Firebase projects and what each should have, from the portal's apps.json (the one
 // list of apps) and the kit's rules for sign-in lists (pwa-kit docs/one-site.md "Sign-in origins").
+import { z } from 'zod';
 import { SUITE_SITE } from '@huishouden/pwa-kit/site';
 import { sh, shOk } from './sh';
 
@@ -23,8 +24,17 @@ export interface AppEntry {
   provision?: boolean;
 }
 
+const APPS = z.array(z.object({ repo: z.string().min(1), site: z.string().regex(/^[a-z0-9-]+$/).optional(), provision: z.boolean().optional() }).passthrough());
+
+/** The portal's apps.json, checked: a changed shape fails here, not as a wrong expected list. */
+export function parseApps(json: unknown): AppEntry[] {
+  const r = APPS.safeParse(json);
+  if (!r.success) throw new Error(`apps.json: ${r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+  return r.data;
+}
+
 export function portalApps(): AppEntry[] {
-  return JSON.parse(Buffer.from(shOk(['gh', 'api', 'repos/huishouden/portal/contents/apps.json', '--jq', '.content']), 'base64').toString('utf8')) as AppEntry[];
+  return parseApps(JSON.parse(Buffer.from(shOk(['gh', 'api', 'repos/huishouden/portal/contents/apps.json', '--jq', '.content']), 'base64').toString('utf8')));
 }
 
 /** Each app's staging site, as bootstrap names them: the production default site becomes the staging default site, <family>-<app> becomes huishouden-staging-<app>. */

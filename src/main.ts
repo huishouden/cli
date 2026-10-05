@@ -9,8 +9,6 @@ import './commands/data';
 import './commands/account';
 import pkg from '../package.json';
 
-const ACCOUNT = new Set(['login', 'logout', 'whoami']);
-const VALUED = new Set(['level', 'pr', 'reviewer', 'to']);
 
 function help(group?: string): string {
   const lines = [`hh ${pkg.version}: the Huishouden command line`, ''];
@@ -25,6 +23,8 @@ function help(group?: string): string {
 }
 
 async function main(argv: string[]): Promise<number> {
+  // The account group's commands run without the group's name: `hh login`.
+  const ACCOUNT = new Set(list('account').map((c) => c.name));
   const [first, second, ...rest] = argv;
   if (!first || first === 'help' || first === '--help' || first === '-h') {
     console.log(help(second));
@@ -44,7 +44,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(help(group));
     return name && name !== '--help' ? 2 : 0;
   }
-  const { args, flags } = parseArgs(tail, new Set([...VALUED, ...(command.valued ?? [])]));
+  const { args, flags } = parseArgs(tail, new Set(command.valued ?? []));
   if (flags.help) {
     console.log(`${command.usage}\n  ${command.summary}${command.details ? `\n\n${command.details}` : ''}`);
     return 0;
