@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.0](https://github.com/huishouden/cli/compare/v1.0.0...v1.1.0) (2026-10-05)
+
+### Features
+
+* **dev:** review bar from the review's findings; free emulator ports; .hh excluded ([7548111](https://github.com/huishouden/cli/commit/7548111ccdbfc438d1432b0d33a5900535e58b32))
+
 ## 1.0.0 (2026-10-05)
 
 ### Features
