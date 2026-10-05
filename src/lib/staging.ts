@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { latestKitTag } from './kit';
+import { kitHasTarball, kitTarballUrl } from './kitbump';
 import { sh, shOk, stream } from './sh';
 
 export const STAGING_SA = 'github-deploy@huishouden-staging.iam.gserviceaccount.com';
@@ -24,6 +25,15 @@ export function trustedKit(log: (l: string) => void): string {
   if (!existsSync(join(dir, 'node_modules'))) {
     log(`pwa-kit ${tag} → ${dir}`);
     mkdirSync(join(dir, '..'), { recursive: true });
+    if (kitHasTarball(tag)) {
+      // Releases from 0.106 carry the package as a tarball and have no committed dist; scripts and src come with it.
+      mkdirSync(dir, { recursive: true });
+      const tgz = join(dir, '..', `pwa-kit-${tag}.tgz`);
+      shOk(['curl', '-fsSL', '--retry', '3', '-o', tgz, kitTarballUrl(tag)]);
+      shOk(['tar', '-xzf', tgz, '-C', dir, '--strip-components=1']);
+      shOk(['bun', 'install', '--production', '--ignore-scripts'], { cwd: dir });
+      return dir;
+    }
     if (!existsSync(join(dir, '.git'))) shOk(['git', 'clone', '-q', '--depth', '1', '--branch', tag, 'https://github.com/huishouden/pwa-kit.git', dir]);
     shOk(['bun', 'install', '--frozen-lockfile', '--ignore-scripts'], { cwd: dir });
   }
