@@ -1,16 +1,16 @@
 // hh dev verify: everything a PR is checked with that needs no deploy, on this machine.
 import { register } from '../../registry';
 import { evidenceDir, save } from '../../lib/evidence';
-import { repoAt } from '../../lib/repo';
+import { syncedRepo } from '../../lib/kitbump';
 import { runLocal } from '../../lib/runs';
 
 register({
   group: 'dev',
   name: 'verify',
   summary: 'Build, lint, the kit checks, unit tests, screenshots on a local preview, emulator tests',
-  usage: 'hh dev verify [--no-screenshots] [--no-emulators] [--json]',
+  usage: 'hh dev verify [--no-screenshots] [--no-emulators] [--no-bump-kit] [--json]',
   async run(ctx) {
-    const repo = repoAt(ctx.cwd);
+    const { repo } = syncedRepo(ctx, false);
     const outDir = evidenceDir(repo, repo.head);
     const r = await runLocal(repo, { json: ctx.json, log: ctx.log, outDir, screenshots: !ctx.flags['no-screenshots'], emulators: !ctx.flags['no-emulators'] });
     const evidence = { sha: repo.head, mode: 'local' as const, ok: r.steps.ok, steps: r.steps.records, shots: r.shots, reason: 'hh dev verify' };

@@ -19,7 +19,8 @@ export interface Repo {
 
 export function repoAt(cwd: string): Repo {
   const root = shOk(['git', 'rev-parse', '--show-toplevel'], { cwd });
-  const url = shOk(['git', 'remote', 'get-url', 'origin'], { cwd: root });
+  // The configured URL, not `remote get-url` (which expands insteadOf rewrites to a mirror or a local path).
+  const url = sh(['git', 'config', '--get', 'remote.origin.url'], { cwd: root }).stdout.trim() || shOk(['git', 'remote', 'get-url', 'origin'], { cwd: root });
   const m = /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/([^/]+?)(\.git)?\/?$/.exec(url);
   if (!m) throw new Error(`origin is not a GitHub repo: ${url}`);
   const pkgPath = join(root, 'package.json');
@@ -60,33 +61,13 @@ export interface PullRequest {
   baseRefName: string;
   title: string;
   author?: { login: string };
+  headRefName?: string;
 }
 
 export function currentPr(repo: Repo, number?: string): PullRequest | null {
-  const r = sh(['gh', 'pr', 'view', number ?? repo.branch, '-R', repo.slug, '--json', 'number,url,isDraft,headRefOid,baseRefName,title,author'], { cwd: repo.root });
+  const r = sh(['gh', 'pr', 'view', number ?? repo.branch, '-R', repo.slug, '--json', 'number,url,isDraft,headRefOid,headRefName,baseRefName,title,author'], { cwd: repo.root });
   if (r.code !== 0) return null;
   return JSON.parse(r.stdout) as PullRequest;
-}
-
-/**
- * Where the version lives: package.json, or for a repo without one (a Claude Code plugin
- * marketplace) its one tracked `.claude-plugin/plugin.json`.
- */
-export function versionFile(repo: Pick<Repo, 'root'>): string | undefined {
-  if (existsSync(join(repo.root, 'package.json'))) return 'package.json';
-  const plugins = sh(['git', 'ls-files', '*/.claude-plugin/plugin.json', '.claude-plugin/plugin.json'], { cwd: repo.root }).stdout.split('\n').filter(Boolean);
-  return plugins.length === 1 ? plugins[0] : undefined;
-}
-
-export function baseVersion(repo: Repo): string | undefined {
-  const file = versionFile(repo) ?? 'package.json';
-  const r = sh(['git', 'show', `origin/${repo.base}:${file}`], { cwd: repo.root });
-  if (r.code !== 0) return undefined;
-  try {
-    return JSON.parse(r.stdout).version;
-  } catch {
-    return undefined;
-  }
 }
 
 export const hasScript = (repo: Repo, name: string) => !!repo.pkg.scripts?.[name];
@@ -106,4 +87,14 @@ export function scratchDir(repo: Repo, ...parts: string[]): string {
     }
   }
   return dir;
+}
+
+/** The PR once GitHub reports `head` as its head (a push shows up after a moment); the last answer when it never does. */
+export async function currentPrAt(repo: Repo, number: string | undefined, head: string, { tries = 15, waitMs = 2000 } = {}): Promise<PullRequest | null> {
+  let pr = currentPr(repo, number);
+  for (let i = 0; pr && pr.headRefOid !== head && i < tries; i++) {
+    await Bun.sleep(waitMs);
+    pr = currentPr(repo, number);
+  }
+  return pr;
 }

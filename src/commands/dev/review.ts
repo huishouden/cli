@@ -4,7 +4,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { flagString, register } from '../../registry';
-import { currentPr, repoAt, scratchDir } from '../../lib/repo';
+import { currentPr, currentPrAt, scratchDir } from '../../lib/repo';
+import { syncedRepo } from '../../lib/kitbump';
+
 import { has, sh } from '../../lib/sh';
 import { headReview, openBlocking, parseRollup, markFromReview, cacheDir, upsertReviewComment, writeReviewRecord, reviewThreads } from '../../lib/review';
 export { openBlocking, parseRollup } from '../../lib/review';
@@ -70,12 +72,12 @@ register({
   group: 'dev',
   name: 'review',
   summary: 'Run the local cr reviewer on the PR (org reviewers included) and summarize what blocks ready',
-  usage: 'hh dev review [--pr=N] [--json]',
+  usage: 'hh dev review [--pr=N] [--no-bump-kit] [--json]',
   valued: ['pr'],
   async run(ctx) {
     if (!has('cr')) return { ok: false, data: { error: 'cr not installed' }, text: 'cr (codereview-cli) is not installed.' };
-    const repo = repoAt(ctx.cwd);
-    const pr = currentPr(repo, flagString(ctx.flags, 'pr'));
+    const { repo, kit } = syncedRepo(ctx, true);
+    const pr = kit.status === 'bumped' ? await currentPrAt(repo, flagString(ctx.flags, 'pr'), repo.head) : currentPr(repo, flagString(ctx.flags, 'pr'));
     if (!pr) return { ok: false, data: { error: 'no pull request' }, text: 'No PR for this branch (gh pr create --draft).' };
     const agents = ensureReviewers(ctx.log);
     const out = join(scratchDir(repo), `cr-${pr.number}.json`);

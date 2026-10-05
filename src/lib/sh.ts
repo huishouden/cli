@@ -11,6 +11,8 @@ export interface ShOptions {
   cwd?: string;
   env?: Record<string, string | undefined>;
   input?: string;
+  /** Kill the program after this many milliseconds (a failed run, not a hang). */
+  timeoutMs?: number;
 }
 
 const mergeEnv = (env?: Record<string, string | undefined>) => {
@@ -26,6 +28,7 @@ export function sh(cmd: string[], opts: ShOptions = {}): ShResult {
     stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
+    ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
   });
   return { code: p.exitCode ?? 1, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
 }
@@ -57,3 +60,9 @@ export async function stream(cmd: string[], opts: ShOptions & { json?: boolean }
 }
 
 export const has = (program: string) => sh(['sh', '-c', `command -v ${program}`]).code === 0;
+
+/** Runs a program with this process's stdin, stdout and stderr; returns its exit code. */
+export function runInherit(cmd: string[], env?: Record<string, string | undefined>): number {
+  const p = Bun.spawnSync(cmd, { env: mergeEnv(env), stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
+  return p.exitCode ?? 1;
+}

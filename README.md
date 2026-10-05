@@ -5,10 +5,14 @@ the suite (`hh ops`) and the developer process (`hh dev`). Every command takes `
 document on stdout, progress on stderr.
 
 ```sh
-bun add -g @huishouden/cli@github:huishouden/cli#v1.4.0   # installs `hh` at an exact release tag
-hh self-update                                           # later: installs the latest release
-bunx github:huishouden/cli#v1.4.0 dev ready              # no install, with an exact tag
+bun add -g https://github.com/huishouden/cli/releases/download/vX.Y.Z/cli-X.Y.Z.tgz   # installs `hh` from a release's tarball (public, no token)
+hh self-update                                                                         # installs the latest release by hand
 ```
+
+hh updates itself: before a command runs, if a newer release exists (asked of GitHub at most once
+every 6 hours, cached in `~/.cache/hh`), it installs it and runs the same command on the new
+version. It does nothing in CI (`CI` set), with `HH_NO_AUTO_UPDATE=1`, offline, or from a source
+checkout, and a failed update is a warning, never a stop.
 
 Needs [Bun](https://bun.sh). `hh login` and `hh data` need nothing else. The developer and
 operations commands also need [gh](https://cli.github.com) signed in, and for some of them
@@ -26,14 +30,30 @@ The author owns everything before `main`; pull requests run no hosted CI (pwa-ki
 | 2 | `hh dev review` | `cr review` as the reviewer account with the org's reviewers (huishouden/cr-reviewers, cloned to `~/Dev/huishouden-cr-reviewers` and registered on the `reviewer` profile if missing; `--max-agents 8`; `--fresh-session` on a PR's first review after the reviewers change), one review at a time on the machine; lists findings and unresolved threads. Bar: no Blocking or Major |
 | 3 | `hh dev verify` | Install, lint, the kit's checks (design, writes, headers, i18n, bandwidth), unit tests, build, screenshots on a local preview (phone and tablet, light and dark; a scene written for one size that doesn't render at the other is reported, not failed), emulator tests with the household's rules |
 | 3 | `hh dev evidence` | The same, or on the app's staging site when the change touches rules, Workers, sign-in, Google or notifications (`--staging`/`--local` override): build against `huishouden-staging`, deploy the suite with this build to the app's staging site with your own `firebase` login, smoke and signed-in tests there (`pwa-staging run`), screenshots. Posts or updates one PR comment with the results and the images (GitHub's user-attachments). Never production |
-| 4 | `hh dev release` | package.json version (semver from the Conventional Commits since the last tag) and its CHANGELOG.md section; `--commit` commits them |
-| 5 | `hh dev ready` | Refuses unless the reviewer account reviewed the head commit and no Blocking or Major finding is still open (a finding closes when its threads on its line are resolved; one posted only in the review body stays open until a later review drops it), the evidence comment is for the head commit and passed, and the version is bumped with its section (docs-only changes need none); then `gh pr ready` |
-| 6 | merge | `main` builds, tests, deploys, smoke-checks over HTTP and tags the version |
+| 4 | `hh dev ready` | Refuses unless the reviewer account reviewed the head commit and no Blocking or Major finding is still open (a finding closes when its threads on its line are resolved; one posted only in the review body stays open until a later review drops it) and the evidence comment is for the head commit and passed; then `gh pr ready`. If the kit was behind it is bumped first (below) and review and evidence are redone for the new head |
+| 5 | merge (squash) | `main` builds and tests, then CI versions and releases (below) |
 
-`hh dev bump-kit` moves `@huishouden/pwa-kit` and the `huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z`
-workflow references to the kit's latest exact tag together and runs lint and tests: do it in any
-repo you touch. hh itself warns once a day when a newer release exists (not in CI, or with
-`HH_NO_UPDATE_CHECK` set); `hh self-update` installs it.
+The model: start a draft, run `hh dev ready`, merge. A PR carries no version, CHANGELOG or built
+output; title it as a Conventional Commit (the squash-merge title is the commit). `hh dev release`
+is a no-op that says so.
+
+On every merge to main, CI computes the next semver from the Conventional Commit titles since the
+last `v*` tag (`feat` is minor, `fix`/`perf`/`refactor` patch, `!` or `BREAKING CHANGE:` major;
+`chore`/`docs`/`test`/`ci` alone release nothing), creates the annotated tag, and creates the
+GitHub release with generated notes and `cli-X.Y.Z.tgz` attached (`bun pm pack`, packed with that
+version; `package.json` stays `0.0.0` and nothing is committed back). `hh self-update` and
+self-update-on-run install that asset by its URL. Releases are serialized by the workflow's
+concurrency group; a tag whose release failed half-way is finished by the next run.
+
+When a repo pins an older kit than the latest release, `hh dev verify|evidence|review|ready` first
+applies `bump-kit` as a commit "chore: kit vX.Y.Z" on the current branch (package pin, `bun.lock`
+and the exact workflow refs), pushes it when the branch has an upstream, and prints what changed,
+so the PR carries it. `--no-bump-kit` skips it; it never runs on `main` or over uncommitted edits
+to `package.json`, `bun.lock` or the workflows.
+
+`hh dev bump-kit` moves `@huishouden/pwa-kit` (to the latest release's tarball URL when the release
+has one, else its git tag) and the `huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z` workflow
+references to the latest exact tag together and runs lint and tests.
 
 ## Signing in
 
@@ -107,8 +127,8 @@ rules from huishouden/rules.
 
 One file under `src/commands/<group>/` calling `register({ group, name, summary, usage, run })`,
 imported from the group's `index.ts`. `run` returns `{ ok, data, text }`: `data` is the `--json`
-output, `text` what people read. Bump the version and CHANGELOG.md in the PR (`hh dev release`);
-`main` tags it `v<version>` and creates its GitHub release; no tag ever moves.
+output, `text` what people read. Title the PR as a Conventional Commit; CI versions it on merge and
+no tag ever moves.
 
 ## License
 
