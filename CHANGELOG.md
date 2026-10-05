@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* a sign-in file that can't be removed is reported by logout; a neutral visit in the seed ([9c77aa4](https://github.com/huishouden/cli/commit/9c77aa4fea1d951b3675e87ff093d578a61a915b))
 * **dev:** firebase-tools 15.32.1 for emulators and deploys; a Java 21+ found for the emulators ([66eb3a1](https://github.com/huishouden/cli/commit/66eb3a1fc0b16b976a846576d104fc399a925707))
 * logout names a keychain it could not clear; Health appointments in the emulator's privacy checks ([945567f](https://github.com/huishouden/cli/commit/945567f68f4503d6a4082abbccc4e14f5dfd46f4))
 * an unreachable keychain doesn't hide a sign-in the file holds; old sign-ins say so ([b24e6db](https://github.com/huishouden/cli/commit/b24e6db2611356a5d214842db08a42d478329a59))
