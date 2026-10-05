@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { flagString, register } from '../../registry';
 import { latestEvidence } from '../../lib/evidence';
 import { baseVersion, changedFiles, currentPr, fetchBase, isDocsOnly, repoAt } from '../../lib/repo';
-import { sh, shOk } from '../../lib/sh';
+import { shOk } from '../../lib/sh';
 import { compare, hasSection } from '../../lib/semver';
 import { headReview, openBlocking, reviewThreads } from '../../lib/review';
 
@@ -68,7 +68,6 @@ register({
       action = 'marked ready for review';
     } else if (ok && !pr.isDraft) action = 'already ready';
     else if (ok) action = 'ready (dry run)';
-    void sh;
     return {
       ok,
       data: { pr: pr.number, head, checks, action },

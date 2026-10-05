@@ -4,7 +4,7 @@
 // keychain. Commands then act as that person, so the household's rules apply.
 import { randomBytes } from 'node:crypto';
 import { platform } from 'node:os';
-import { flagString, register } from '../../registry';
+import { register } from '../../registry';
 import { deleteSecret, readSecret, saveSecret } from '../../lib/keychain';
 import { sh, shOk } from '../../lib/sh';
 
@@ -118,7 +118,6 @@ register({
   async run(ctx) {
     const site = siteFor(ctx.flags);
     const removed = deleteSecret(site);
-    void flagString;
     return { ok: true, data: { site, removed }, text: removed ? `Signed out of ${site}.` : `Not signed in to ${site}.` };
   },
 });
