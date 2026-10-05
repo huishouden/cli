@@ -1,6 +1,6 @@
 // The repo hh runs in: its GitHub name, branch, head, package.json, the app's path on the suite's
 // site, its pull request and the files it changes against main.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sh, shOk } from './sh';
 
@@ -20,7 +20,7 @@ export interface Repo {
 export function repoAt(cwd: string): Repo {
   const root = shOk(['git', 'rev-parse', '--show-toplevel'], { cwd });
   const url = shOk(['git', 'remote', 'get-url', 'origin'], { cwd: root });
-  const m = /github\.com[:/]([^/]+)\/([^/.]+?)(\.git)?$/.exec(url);
+  const m = /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/([^/]+?)(\.git)?\/?$/.exec(url);
   if (!m) throw new Error(`origin is not a GitHub repo: ${url}`);
   const pkgPath = join(root, 'package.json');
   const pkg = existsSync(pkgPath) ? JSON.parse(readFileSync(pkgPath, 'utf8')) : {};
@@ -62,7 +62,7 @@ export interface PullRequest {
 }
 
 export function currentPr(repo: Repo, number?: string): PullRequest | null {
-  const r = sh(['gh', 'pr', 'view', ...(number ? [number] : []), '-R', repo.slug, '--json', 'number,url,isDraft,headRefOid,baseRefName,title'], { cwd: repo.root });
+  const r = sh(['gh', 'pr', 'view', number ?? repo.branch, '-R', repo.slug, '--json', 'number,url,isDraft,headRefOid,baseRefName,title'], { cwd: repo.root });
   if (r.code !== 0) return null;
   return JSON.parse(r.stdout) as PullRequest;
 }
@@ -78,3 +78,20 @@ export function baseVersion(repo: Repo): string | undefined {
 }
 
 export const hasScript = (repo: Repo, name: string) => !!repo.pkg.scripts?.[name];
+
+/** hh's scratch space, `.hh/` in the repo, kept out of git through info/exclude (worktrees too),
+ * never through the repo's .gitignore. */
+export function scratchDir(repo: Repo, ...parts: string[]): string {
+  const dir = join(repo.root, '.hh', ...parts);
+  mkdirSync(dir, { recursive: true });
+  const rel = sh(['git', 'rev-parse', '--git-path', 'info/exclude'], { cwd: repo.root }).stdout.trim();
+  if (rel) {
+    const exclude = rel.startsWith('/') ? rel : join(repo.root, rel);
+    const text = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
+    if (!/^\.hh\/?$/m.test(text)) {
+      mkdirSync(join(exclude, '..'), { recursive: true });
+      writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.hh/\n`);
+    }
+  }
+  return dir;
+}

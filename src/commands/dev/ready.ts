@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import { flagString, register } from '../../registry';
 import { latestEvidence } from '../../lib/evidence';
 import { baseVersion, changedFiles, currentPr, fetchBase, isDocsOnly, repoAt } from '../../lib/repo';
-import { sh, shOk } from '../../lib/sh';
+import { shOk } from '../../lib/sh';
 import { compare, hasSection } from '../../lib/semver';
-import { unresolvedThreads } from './review';
+import { headReview, openBlocking, reviewThreads } from '../../lib/review';
 
 export interface Check {
   name: string;
@@ -30,13 +30,12 @@ register({
 
     // 1. A review of the head commit by the reviewer account, and no Blocking or Major thread open.
     const reviewer = flagString(ctx.flags, 'reviewer') ?? 'piekstra-dev';
-    const reviews = JSON.parse(shOk(['gh', 'api', `repos/${repo.slug}/pulls/${pr.number}/reviews`, '--paginate', '--jq', `[.[] | select(.user.login == "${reviewer}") | .commit_id]`]) || '[]') as string[];
-    const reviewedHead = reviews.includes(head);
-    const open = unresolvedThreads(repo, pr.number).filter((t) => t.severity === 'Blocking' || t.severity === 'Major');
+    const review = headReview(repo, pr.number, head, reviewer);
+    const open = review ? openBlocking(review.findings, reviewThreads(repo, pr.number)) : [];
     checks.push({
       name: 'review',
-      ok: reviewedHead && open.length === 0,
-      detail: !reviewedHead ? `no ${reviewer} review of ${head.slice(0, 7)} (hh dev review)` : open.length ? `${open.length} Blocking/Major thread(s) unresolved: ${open.map((t) => t.path).join(', ')}` : `${reviewer} reviewed ${head.slice(0, 7)}; no Blocking or Major open`,
+      ok: !!review && open.length === 0,
+      detail: !review ? `no ${reviewer} review of ${head.slice(0, 7)} (hh dev review)` : open.length ? `${open.length} Blocking/Major finding(s) open: ${open.map((f) => f.where).join(', ')}` : `${reviewer} reviewed ${head.slice(0, 7)}; no Blocking or Major open`,
     });
 
     // 2. Evidence for the head commit, passed.
@@ -69,7 +68,6 @@ register({
       action = 'marked ready for review';
     } else if (ok && !pr.isDraft) action = 'already ready';
     else if (ok) action = 'ready (dry run)';
-    void sh;
     return {
       ok,
       data: { pr: pr.number, head, checks, action },

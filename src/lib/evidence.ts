@@ -3,7 +3,7 @@
 // the marker line to check the head commit passed.
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Repo } from './repo';
+import { scratchDir, type Repo } from './repo';
 import { VARIANTS, type Shots } from './screenshots';
 import { sh, shOk } from './sh';
 import type { StepRecord } from './steps';
@@ -28,10 +28,9 @@ export function parseMarker(body: string): { sha: string; mode: string; ok: bool
 }
 
 export function evidenceDir(repo: Repo, sha: string) {
-  const dir = join(repo.root, '.hh', 'evidence', sha.slice(0, 12));
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  return scratchDir(repo, 'evidence', sha.slice(0, 12));
 }
+
 
 export function save(repo: Repo, e: Evidence) {
   writeFileSync(join(evidenceDir(repo, e.sha), 'result.json'), JSON.stringify(e, null, 2));

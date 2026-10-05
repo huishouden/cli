@@ -1,8 +1,8 @@
 // The checks behind `hh dev verify` (local) and `hh dev evidence` (local or staging).
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { compare } from './semver';
 import { join } from 'node:path';
-import type { Repo } from './repo';
-import { hasScript } from './repo';
+import { hasScript, scratchDir, type Repo } from './repo';
 import { takeScreenshots, type Shots } from './screenshots';
 import { has, sh, shOk, stream } from './sh';
 import { Steps } from './steps';
@@ -98,26 +98,66 @@ async function screenshotsAt(repo: Repo, steps: Steps, url: string, opts: RunOpt
   return shots;
 }
 
+const portFree = (port: number) => {
+  try {
+    const s = Bun.listen({ hostname: '127.0.0.1', port, socket: { data() {} } });
+    s.stop(true);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Kits before 0.93.0 fix the emulator ports (8080, 9099): wait for another run on this machine to finish. */
+async function waitForEmulatorPorts(log: (l: string) => void, minutes = 15): Promise<void> {
+  for (let waited = 0; ; waited += 10) {
+    if (portFree(8080) && portFree(9099)) return;
+    if (waited % 60 === 0) log(`ports 8080/9099 are in use (another emulator run on this machine); waiting`);
+    if (waited >= minutes * 60) throw new Error(`ports 8080/9099 stayed in use for ${minutes} minutes (another emulator run); rerun when it finishes`);
+    await Bun.sleep(10_000);
+  }
+}
+
+/** A free TCP port on 127.0.0.1. */
+function freePort(): number {
+  const s = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } });
+  const port = s.port;
+  s.stop(true);
+  return port;
+}
+
+/** Kits from 0.93.0 take the emulator ports from the environment (emulator-port). */
+function kitHasEmulatorPorts(repo: Repo): boolean {
+  const pkg = join(repo.root, 'node_modules/@huishouden/pwa-kit/package.json');
+  if (!existsSync(pkg)) return false;
+  const v = JSON.parse(readFileSync(pkg, 'utf8')).version as string | undefined;
+  return !!v && compare(v, '0.93.0') >= 0;
+}
+
 async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
   if (!opts.emulators || !hasScript(repo, 'e2e:emulator')) return;
   if (!has('java')) {
     steps.skip('emulator tests', 'Java is not installed (brew install temurin@21)');
     return;
   }
-  const dir = join(repo.root, '.hh', 'emulators');
-  mkdirSync(dir, { recursive: true });
+  const dir = scratchDir(repo, 'emulators');
   await steps.run('emulator tests (household rules from huishouden/rules main)', async () => {
     const rules = await fetch('https://raw.githubusercontent.com/huishouden/rules/main/firestore.rules');
     if (!rules.ok) throw new Error(`rules: ${rules.status}`);
     writeFileSync(join(dir, 'firestore.rules'), await rules.text());
-    writeFileSync(join(dir, 'firebase.json'), JSON.stringify({ firestore: { rules: 'firestore.rules' }, emulators: { auth: { port: 9099 }, firestore: { port: 8080 }, ui: { enabled: false }, singleProjectMode: true } }));
+    const own = kitHasEmulatorPorts(repo);
+    const auth = own ? freePort() : 9099;
+    const firestore = own ? freePort() : 8080;
+    writeFileSync(join(dir, 'firebase.json'), JSON.stringify({ firestore: { rules: 'firestore.rules' }, emulators: { auth: { port: auth }, firestore: { port: firestore }, ui: { enabled: false }, hub: { port: own ? freePort() : 4400 }, logging: { port: own ? freePort() : 4500 }, singleProjectMode: true } }));
     rmSync(join(repo.root, 'dist'), { recursive: true, force: true });
-    if ((await stream(['bun', 'run', 'build'], { cwd: repo.root, json: opts.json, env: EMULATOR_ENV })) !== 0) throw new Error('emulator build failed');
+    const ports = { VITE_EMULATOR_AUTH_PORT: String(auth), VITE_EMULATOR_FIRESTORE_PORT: String(firestore) };
+    if ((await stream(['bun', 'run', 'build'], { cwd: repo.root, json: opts.json, env: { ...EMULATOR_ENV, ...ports } })) !== 0) throw new Error('emulator build failed');
+    if (!own) await waitForEmulatorPorts(opts.log);
     const pv = await preview(repo);
     try {
       const code = await stream(
         ['npx', '--yes', FIREBASE_TOOLS, 'emulators:exec', '--config', join(dir, 'firebase.json'), '--only', 'auth,firestore', '--project', 'demo-huishouden', 'bun run e2e:emulator'],
-        { cwd: repo.root, json: opts.json, env: { BASE_URL: pv.url, HH_E2E_TARGET: 'emulator', HH_STAGING_RUN: 'e2e-emulator' } },
+        { cwd: repo.root, json: opts.json, env: { BASE_URL: pv.url, HH_E2E_TARGET: 'emulator', HH_STAGING_RUN: 'e2e-emulator', HH_EMULATOR_AUTH_PORT: String(auth), HH_EMULATOR_FIRESTORE_PORT: String(firestore) } },
       );
       return code === 0;
     } finally {
@@ -132,7 +172,8 @@ export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult>
   await common(repo, steps);
   // Built against the staging project, so a screenshot's page can never reach real data.
   const { env } = stagingEnv(repo);
-  await steps.cmd('build', ['bun', 'run', 'build'], { cwd: repo.root, env });
+  if (hasScript(repo, 'build')) await steps.cmd('build', ['bun', 'run', 'build'], { cwd: repo.root, env });
+  else steps.skip('build', 'no build script');
   let shots: Shots | undefined;
   if (steps.ok && opts.screenshots && hasScript(repo, 'screenshots')) {
     const pv = await preview(repo);
@@ -155,7 +196,7 @@ export async function runStaging(repo: Repo, opts: RunOptions): Promise<RunResul
   const url = `https://${site}.web.app${repo.appPath}`;
   await common(repo, steps);
   await steps.cmd('build (staging project)', ['bun', 'run', 'build'], { cwd: repo.root, env });
-  const out = join(repo.root, '.hh', 'site-out');
+  const out = scratchDir(repo, 'site-out');
   await steps.run(`deploy to ${site} (${STAGING_PROJECT})`, async () => {
     rmSync(out, { recursive: true, force: true });
     const token = shOk(['gh', 'auth', 'token']);

@@ -4,7 +4,7 @@
 // SCREENSHOT_DIR.
 import { mkdirSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Repo } from './repo';
+import { scratchDir, type Repo } from './repo';
 import { stream } from './sh';
 
 export interface Variant {
@@ -71,8 +71,7 @@ export async function takeScreenshots(repo: Repo, baseUrl: string, outDir: strin
   const { env, args } = screenshotCommand(script);
   const config = ['playwright.config.ts', 'playwright.config.js', 'playwright.config.mjs'].map((f) => join(repo.root, f)).find(existsSync);
   if (!config) throw new Error('no playwright.config.ts');
-  mkdirSync(join(repo.root, '.hh'), { recursive: true });
-  const wrapper = join(repo.root, '.hh', 'playwright.variant.config.ts');
+  const wrapper = join(scratchDir(repo), 'playwright.variant.config.ts');
   writeFileSync(wrapper, WRAPPER(config));
   const shots: Shots = { dir: outDir, files: {}, failed: [] };
   for (const v of VARIANTS) {
