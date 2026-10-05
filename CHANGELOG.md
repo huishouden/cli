@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.0](https://github.com/huishouden/cli/compare/v1.2.0...v1.3.0) (2026-10-05)
+
+### Features
+
+* hh login (loopback + PKCE), hh data (the connector's tools), hh ops auth-domains, oauth-check, secret set, monitoring, roles ([1507347](https://github.com/huishouden/cli/commit/1507347ad9dae81291c6f4c3d89f45ecb240dfeb))
+
+### Documentation
+
+* the update path (bun caches #v1) (#5) ([5d21a72](https://github.com/huishouden/cli/commit/5d21a729271fd6b548605be58c123b9be5c79786))
+
 ## [1.2.0](https://github.com/huishouden/cli/compare/v1.1.1...v1.2.0) (2026-10-05)
 
 ### Features
