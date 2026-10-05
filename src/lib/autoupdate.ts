@@ -3,8 +3,8 @@
 // failure is a warning (or silence, when offline) and the command runs on the current version.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { installCommand, isOutdated, latestReleaseTag } from './update';
-import { runInherit, stream } from './sh';
+import { installCommand, installTag, isOutdated, latestReleaseTag } from './update';
+import { runInherit } from './sh';
 
 export const SIX_HOURS_MS = 6 * 3_600_000;
 
@@ -71,7 +71,7 @@ export async function autoUpdate(o: AutoUpdateOptions): Promise<AutoUpdate> {
   (o.log ?? console.error)(`hh ${o.version} → ${to}: updating`);
   let code: number;
   try {
-    code = await (o.install ?? ((t) => stream(installCommand(t), { json: true })))(tag);
+    code = await (o.install ?? ((t) => installTag(t, o.version)))(tag);
   } catch (e) {
     return { status: 'failed', message: `update to ${tag} failed: ${(e as Error).message}` };
   }

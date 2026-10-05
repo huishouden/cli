@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { compare } from './semver';
-import { sh } from './sh';
+import { sh, stream } from './sh';
 
 const DAY_MS = 86_400_000;
 
@@ -29,6 +29,20 @@ export const isOutdated = (current: string, latestTag: string): boolean => compa
 export const tarballUrl = (tag: string): string => `https://github.com/huishouden/cli/releases/download/${tag}/cli-${tag.slice(1)}.tgz`;
 
 export const installCommand = (tag: string): string[] => ['bun', 'add', '-g', tarballUrl(tag)];
+
+export const removeCommand = ['bun', 'remove', '-g', '@huishouden/cli'];
+
+/**
+ * Installs `tag` over the running version. bun add -g over an installed tarball URL fails with
+ * DependencyLoop, so the old entry is removed first; if the new one then fails to install, the old
+ * version is put back so `hh` is never left uninstalled. Returns the exit code of the new install.
+ */
+export async function installTag(tag: string, current: string, run: (cmd: string[]) => Promise<number> = (cmd) => stream(cmd, { json: true })): Promise<number> {
+  await run(removeCommand);
+  const code = await run(installCommand(tag));
+  if (code !== 0) await run(installCommand(`v${current}`));
+  return code;
+}
 
 export interface WarningOptions {
   now?: number;

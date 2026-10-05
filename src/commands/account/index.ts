@@ -7,7 +7,7 @@ import { platform } from 'node:os';
 import { register } from '../../registry';
 import { forgetSignIn, loopbackLogin, NotSignedIn, signedIn, siteFor, storeSignIn } from '../../lib/signin';
 import { sh, stream } from '../../lib/sh';
-import { installCommand, isOutdated, latestReleaseTag } from '../../lib/update';
+import { installCommand, installTag, isOutdated, latestReleaseTag } from '../../lib/update';
 import pkg from '../../../package.json';
 
 register({
@@ -92,8 +92,7 @@ register({
     const tag = latestReleaseTag();
     if (!isOutdated(from, tag)) return { ok: true, data: { from, latest: tag, updated: false }, text: `hh ${from} is the latest (${tag})` };
     ctx.log(`hh ${from} → ${tag}`);
-    // The tag is exact and never moves, so bun's cache for it is never stale: no remove first.
-    const code = await stream(installCommand(tag), { json: ctx.json });
+    const code = await installTag(tag, from);
     return code === 0
       ? { ok: true, data: { from, latest: tag, updated: true }, text: `hh ${from} → ${tag}` }
       : { ok: false, data: { from, latest: tag, updated: false, error: `bun add -g exited ${code}` }, text: `Update to ${tag} failed (bun add -g exited ${code}). Run: ${installCommand(tag).join(' ')}` };

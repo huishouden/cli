@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bumpWorkflowRefs } from '../src/lib/kitbump';
-import { dailyUpdateWarning, installCommand, isOutdated, parseReleaseTag } from '../src/lib/update';
+import { dailyUpdateWarning, installCommand, installTag, isOutdated, parseReleaseTag } from '../src/lib/update';
 
 let dir: string;
 beforeEach(() => {
@@ -78,4 +78,13 @@ test('next-version: tag and release only for feat, fix, perf, refactor or breaki
   expect(next()).toBe('v1.10.0 1.11.0');
   commit('refactor!: v');
   expect(next()).toBe('v1.10.0 2.0.0');
+});
+
+test('install removes the old entry first and puts the old version back when the new one fails', async () => {
+  const ran: string[] = [];
+  expect(await installTag('v1.5.1', '1.5.0', async (c) => (ran.push(c.slice(0, 3).join(' ') + ' ' + c.at(-1)), 0))).toBe(0);
+  expect(ran).toEqual(['bun remove -g @huishouden/cli', 'bun add -g https://github.com/huishouden/cli/releases/download/v1.5.1/cli-1.5.1.tgz']);
+  const failed: string[] = [];
+  expect(await installTag('v1.5.1', '1.5.0', async (c) => (failed.push(c.at(-1)!), c.includes('v1.5.1') ? 1 : 0))).toBe(1);
+  expect(failed.at(-1)).toContain('/v1.5.0/cli-1.5.0.tgz');
 });
