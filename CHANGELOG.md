@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.1](https://github.com/huishouden/cli/compare/v1.1.0...v1.1.1) (2026-10-05)
+
+### Bug Fixes
+
+* **dev:** review reruns when cr keeps an older review; release --commit makes no empty commit ([85488d3](https://github.com/huishouden/cli/commit/85488d32b373eef1b759ef2f49e6d9d94b447912))
+
 ## [1.1.0](https://github.com/huishouden/cli/compare/v1.0.0...v1.1.0) (2026-10-05)
 
 ### Features
