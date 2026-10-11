@@ -8,6 +8,7 @@ import { has, sh, shOk, stream } from './sh';
 import { Steps } from './steps';
 import { useJava } from './java';
 import { sweepStaging } from './staging';
+import { guardedEnv } from './envguard';
 
 export const STAGING_PROJECT = 'huishouden-staging';
 // One firebase-tools for every emulator run and deploy hh makes: 15.32.1+ (14.x's Firestore emulator
@@ -16,7 +17,7 @@ export const STAGING_PROJECT = 'huishouden-staging';
 export const FIREBASE_TOOLS = 'firebase-tools@15.32.1';
 
 /** The repo's STAGING_* variables as the build's VITE_* (public values; the staging project only). */
-export function stagingEnv(repo: Repo): { env: Record<string, string>; site?: string } {
+export function stagingEnv(repo: Repo): { env: Record<string, string>; site?: string; productionApiKey?: string } {
   const r = sh(['gh', 'variable', 'list', '-R', repo.slug, '--json', 'name,value']);
   const vars = r.code === 0 ? (JSON.parse(r.stdout) as { name: string; value: string }[]) : [];
   const env: Record<string, string> = {};
@@ -24,7 +25,7 @@ export function stagingEnv(repo: Repo): { env: Record<string, string>; site?: st
   if (env.VITE_FIREBASE_PROJECT_ID && env.VITE_FIREBASE_PROJECT_ID !== STAGING_PROJECT)
     throw new Error(`STAGING_VITE_FIREBASE_PROJECT_ID is ${env.VITE_FIREBASE_PROJECT_ID}, not ${STAGING_PROJECT}`);
   for (const k of ['VITE_VAPID_PUBLIC_KEY', 'VITE_NEWRELIC_ACCOUNT_ID', 'VITE_NEWRELIC_APP_ID', 'VITE_NEWRELIC_BROWSER_KEY']) env[k] = '';
-  return { env, site: vars.find((v) => v.name === 'STAGING_SITE')?.value };
+  return { env, site: vars.find((v) => v.name === 'STAGING_SITE')?.value, productionApiKey: vars.find((v) => v.name === 'VITE_FIREBASE_API_KEY')?.value };
 }
 
 const EMULATOR_ENV = {
@@ -68,7 +69,7 @@ export interface RunResult {
   url?: string;
 }
 
-async function common(repo: Repo, steps: Steps) {
+async function common(repo: Repo, steps: Steps, env: Record<string, string>) {
   const cwd = repo.root;
   // A repo's own tests may start the emulators (the connector's do): give them Java 21+ too.
   useJava();
@@ -86,7 +87,7 @@ async function common(repo: Repo, steps: Steps) {
     ['bandwidth check', 'pwa-bandwidth-check'],
   ])
     if (isApp && existsSync(join(cwd, 'node_modules/.bin', bin))) await steps.cmd(name, ['bunx', bin], { cwd });
-  if (hasScript(repo, 'test')) await steps.cmd('unit tests', ['bun', 'run', 'test'], { cwd });
+  if (hasScript(repo, 'test')) await steps.cmd('unit tests', ['bun', 'run', 'test'], { cwd, env });
 }
 
 async function screenshotsAt(repo: Repo, steps: Steps, url: string, opts: RunOptions): Promise<Shots | undefined> {
@@ -158,7 +159,7 @@ async function householdRules(): Promise<string> {
   throw new Error(`rules: ${raw instanceof Error ? raw.message : raw.status}${viaGh ? `; gh api: ${viaGh.stderr.trim().slice(0, 200)}` : '; gh not found'}`);
 }
 
-async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
+async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions, emulatorEnv: Record<string, string>) {
   if (!opts.emulators || !hasScript(repo, 'e2e:emulator')) return;
   const java = useJava();
   if (!java.ok) {
@@ -176,13 +177,15 @@ async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
     writeFileSync(join(dir, 'firebase.json'), JSON.stringify({ firestore: { rules: 'firestore.rules' }, emulators: { auth: { port: auth }, firestore: { port: firestore }, ui: { enabled: false }, hub: { port: own ? freePort() : 4400 }, logging: { port: own ? freePort() : 4500 }, singleProjectMode: true } }));
     rmSync(join(repo.root, 'dist'), { recursive: true, force: true });
     const ports = { VITE_EMULATOR_AUTH_PORT: String(auth), VITE_EMULATOR_FIRESTORE_PORT: String(firestore) };
-    if ((await stream(['bun', 'run', 'build'], { cwd: repo.root, json: opts.json, env: { ...EMULATOR_ENV, ...ports } })) !== 0) throw new Error('emulator build failed');
+    // Every VITE_ value explicit, so a .env.local cannot add or replace one.
+    const buildEnv = { ...emulatorEnv, ...ports };
+    if ((await stream(['bun', 'run', 'build'], { cwd: repo.root, json: opts.json, env: buildEnv })) !== 0) throw new Error('emulator build failed');
     if (!own) await waitForEmulatorPorts(opts.log);
     const pv = await preview(repo);
     try {
       const code = await stream(
         ['npx', '--yes', FIREBASE_TOOLS, 'emulators:exec', '--config', join(dir, 'firebase.json'), '--only', 'auth,firestore', '--project', 'demo-huishouden', 'bun run e2e:emulator'],
-        { cwd: repo.root, json: opts.json, env: { BASE_URL: pv.url, HH_E2E_TARGET: 'emulator', HH_STAGING_RUN: 'e2e-emulator', HH_EMULATOR_AUTH_PORT: String(auth), HH_EMULATOR_FIRESTORE_PORT: String(firestore) } },
+        { cwd: repo.root, json: opts.json, env: { ...buildEnv, BASE_URL: pv.url, HH_E2E_TARGET: 'emulator', HH_STAGING_RUN: 'e2e-emulator', HH_EMULATOR_AUTH_PORT: String(auth), HH_EMULATOR_FIRESTORE_PORT: String(firestore) } },
       );
       return code === 0;
     } finally {
@@ -194,9 +197,14 @@ async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions) {
 /** Build, unit tests, screenshots on a local preview, the emulator tests. */
 export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult> {
   const steps = new Steps(opts.log, opts.json);
-  await common(repo, steps);
-  // Built against the staging project, so a screenshot's page can never reach real data.
-  const { env } = stagingEnv(repo);
+  // Built against the staging project, so a screenshot's page can never reach real data. Before
+  // anything is built or run, no env file, variable or value may name production; every VITE_ value
+  // is then passed explicitly, so a .env.local (which bun and Vite both read) decides nothing.
+  const staged = stagingEnv(repo);
+  const guard = (base: Record<string, string>, log?: (l: string) => void) => guardedEnv(repo.root, base, { kind: 'local', productionApiKey: staged.productionApiKey, log });
+  const env = guard(staged.env, opts.log);
+  const emulatorEnv = guard(EMULATOR_ENV);
+  await common(repo, steps, env);
   if (hasScript(repo, 'build')) await steps.cmd('build', ['bun', 'run', 'build'], { cwd: repo.root, env });
   else steps.skip('build', 'no build script');
   let shots: Shots | undefined;
@@ -208,18 +216,21 @@ export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult>
       pv.stop();
     }
   } else if (opts.screenshots && !hasScript(repo, 'screenshots')) steps.skip('screenshots', 'no screenshots script');
-  if (steps.ok) await emulatorTests(repo, steps, opts);
+  if (steps.ok) await emulatorTests(repo, steps, opts, emulatorEnv);
   return { steps, shots };
 }
 
 /** The branch on the app's staging site: build, deploy the suite with it, browser tests and screenshots there. */
 export async function runStaging(repo: Repo, opts: RunOptions): Promise<RunResult> {
   const steps = new Steps(opts.log, opts.json);
-  const { env, site } = stagingEnv(repo);
-  if (!site || !env.VITE_FIREBASE_PROJECT_ID) throw new Error(`${repo.slug} has no STAGING_SITE / STAGING_VITE_FIREBASE_* variables (infra/bootstrap.sh --staging)`);
+  const { env: staged, site, productionApiKey } = stagingEnv(repo);
+  const guard = (base: Record<string, string>, log?: (l: string) => void) => guardedEnv(repo.root, base, { kind: 'staging', productionApiKey, log });
+  const env = guard(staged, opts.log);
+  const emulatorEnv = guard(EMULATOR_ENV);
+  if (!site || !staged.VITE_FIREBASE_PROJECT_ID) throw new Error(`${repo.slug} has no STAGING_SITE / STAGING_VITE_FIREBASE_* variables (infra/bootstrap.sh --staging)`);
   if (!repo.appPath) throw new Error('no `base:` in .github/workflows/ci.yml: staging deploys need the app\'s path on the suite');
   const url = `https://${site}.web.app${repo.appPath}`;
-  await common(repo, steps);
+  await common(repo, steps, env);
   await steps.cmd('build (staging project)', ['bun', 'run', 'build'], { cwd: repo.root, env });
   const out = scratchDir(repo, 'site-out');
   await steps.run(`deploy to ${site} (${STAGING_PROJECT})`, async () => {
@@ -229,15 +240,15 @@ export async function runStaging(repo: Repo, opts: RunOptions): Promise<RunResul
     const sha = shOk(['git', 'rev-parse', '--short', 'HEAD'], { cwd: repo.root });
     return (await stream(['npx', '--yes', FIREBASE_TOOLS, 'deploy', '--only', `hosting:${site}`, '--project', STAGING_PROJECT, '--non-interactive', '--message', `hh evidence ${repo.name} ${sha}`], { cwd: out, json: opts.json })) === 0;
   });
-  if (hasScript(repo, 'e2e')) await steps.cmd('smoke tests on staging', ['bun', 'run', 'e2e'], { cwd: repo.root, env: { BASE_URL: url } });
+  if (hasScript(repo, 'e2e')) await steps.cmd('smoke tests on staging', ['bun', 'run', 'e2e'], { cwd: repo.root, env: { ...env, BASE_URL: url } });
   if (hasScript(repo, 'e2e:signed-in')) {
     const grep = hasScript(repo, 'e2e:emulator') ? ['--grep', '@staging', '--pass-with-no-tests'] : [];
     const runner = existsSync(join(repo.root, 'node_modules/.bin/pwa-staging')) ? ['bunx', 'pwa-staging', 'run', '--'] : [];
     if (!runner.length) steps.skip('signed-in tests on staging', 'the pinned kit has no `pwa-staging run` (0.90+): hh dev bump-kit');
-    else await steps.cmd('signed-in tests on staging', [...runner, 'bun', 'run', 'e2e:signed-in', ...grep], { cwd: repo.root, env: { BASE_URL: url } });
+    else await steps.cmd('signed-in tests on staging', [...runner, 'bun', 'run', 'e2e:signed-in', ...grep], { cwd: repo.root, env: { ...env, BASE_URL: url } });
   }
   const shots = steps.ok ? await screenshotsAt(repo, steps, url, opts) : undefined;
-  if (steps.ok) await emulatorTests(repo, steps, opts);
+  if (steps.ok) await emulatorTests(repo, steps, opts, emulatorEnv);
   // Leftovers of earlier runs (over a day old), since nothing sweeps staging on a schedule.
   await steps.run('staging cleanup (leftovers over a day old)', async () => (await sweepStaging(opts.log, opts.json)) === 0 || 'sweep failed; run hh ops staging-cleanup', { always: true });
   return { steps, shots, url };
