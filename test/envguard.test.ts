@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { envFiles, explicitEnv, findOffences, parseDotenv, productionKeys, refusal } from '../src/lib/envguard';
+import { envFiles, guardedEnv, parseDotenv, ProductionEnvRefused, productionKeys } from '../src/lib/envguard';
 
 const dirs: string[] = [];
 const repoWith = (files: Record<string, string>) => {
@@ -29,29 +29,49 @@ test('production values are recognised by project, auth domain, project number a
   expect(productionKeys({ FIREBASE_PROJECT_ID: 'huishouden-piekstra', VITE_FIREBASE_PROJECT_ID: 'demo-huishouden' })).toEqual([]);
 });
 
+const guard = (root: string, base: Record<string, string>, extra: Partial<Parameters<typeof guardedEnv>[2]> = {}) => guardedEnv(root, base, { kind: 'local', processEnv: {}, ...extra });
+const refused = (f: () => unknown) => {
+  try {
+    f();
+  } catch (e) {
+    expect(e).toBeInstanceOf(ProductionEnvRefused);
+    return e as ProductionEnvRefused;
+  }
+  throw new Error('not refused');
+};
+
 test('a .env.local with production values is refused, and named without printing values', () => {
   const root = repoWith({ '.env.local': 'VITE_FIREBASE_PROJECT_ID=huishouden-piekstra\nVITE_FIREBASE_API_KEY=prod-key\n', '.env.example': 'VITE_FIREBASE_PROJECT_ID=huishouden-piekstra\n' });
   expect(envFiles(root)).toEqual(['.env.local']);
-  const found = findOffences(root, {}, 'prod-key');
-  expect(found).toEqual([{ source: '.env.local', keys: ['VITE_FIREBASE_PROJECT_ID', 'VITE_FIREBASE_API_KEY'] }]);
-  const msg = refusal(found, 'local');
-  expect(msg).toContain('.env.local');
-  expect(msg).toContain('production');
-  expect(msg).not.toContain('prod-key');
+  const e = refused(() => guard(root, {}, { productionApiKey: 'prod-key' }));
+  expect(e.offences).toEqual([{ source: '.env.local', keys: ['VITE_FIREBASE_PROJECT_ID', 'VITE_FIREBASE_API_KEY'] }]);
+  expect(e.kind).toBe('local');
+  expect(e.message).toContain('.env.local');
+  expect(e.message).toContain('production');
+  expect(e.message).not.toContain('prod-key');
 });
 
-test('.env.<mode>.local and the process environment are checked too; staging values pass', () => {
+test('.env.<mode>.local, the process environment and the run\'s own values are checked too; staging values pass', () => {
   const root = repoWith({ '.env.production.local': 'VITE_FIREBASE_AUTH_DOMAIN=huishouden-piekstra.web.app\n', '.env': 'VITE_FIREBASE_PROJECT_ID=huishouden-staging\n' });
-  expect(findOffences(root, { VITE_FIREBASE_PROJECT_ID: 'huishouden-piekstra' })).toEqual([
+  expect(refused(() => guard(root, { VITE_GOOGLE_CLIENT_ID: '865471112898-x.apps.googleusercontent.com' }, { processEnv: { VITE_FIREBASE_PROJECT_ID: 'huishouden-piekstra' } })).offences).toEqual([
     { source: '.env.production.local', keys: ['VITE_FIREBASE_AUTH_DOMAIN'] },
     { source: 'the process environment', keys: ['VITE_FIREBASE_PROJECT_ID'] },
+    { source: "the run's own values", keys: ['VITE_GOOGLE_CLIENT_ID'] },
   ]);
-  expect(findOffences(repoWith({ '.env': 'VITE_FIREBASE_PROJECT_ID=huishouden-staging\n' }), {})).toEqual([]);
+  expect(() => guard(repoWith({ '.env': 'VITE_FIREBASE_PROJECT_ID=huishouden-staging\n' }), { VITE_FIREBASE_PROJECT_ID: 'huishouden-staging' })).not.toThrow();
 });
 
-test('the explicit env sets every Firebase key and every VITE_ key a file defines, so no file decides anything', () => {
+test('an unknown production API key is logged as skipped, not silently ignored', () => {
+  const lines: string[] = [];
+  guard(repoWith({}), {}, { log: (l) => lines.push(l) });
+  expect(lines.join('\n')).toMatch(/production API key unknown/);
+  guard(repoWith({}), {}, { productionApiKey: 'k', log: (l) => lines.push(l) });
+  expect(lines).toHaveLength(1);
+});
+
+test('the explicit env sets every Firebase key and every VITE_ key a file or the shell defines, so no file decides anything', () => {
   const root = repoWith({ '.env.local': 'VITE_FIREBASE_PROJECT_ID=demo-x\nVITE_CUSTOM=1\nNOT_VITE=2\n' });
-  const env = explicitEnv(root, { VITE_FIREBASE_PROJECT_ID: 'huishouden-staging' }, { VITE_FROM_SHELL: 'z', PATH: '/bin' });
+  const env = guard(root, { VITE_FIREBASE_PROJECT_ID: 'huishouden-staging' }, { processEnv: { VITE_FROM_SHELL: 'z', PATH: '/bin' } });
   expect(env.VITE_FIREBASE_PROJECT_ID).toBe('huishouden-staging');
   expect(env.VITE_FIREBASE_API_KEY).toBe('');
   expect(env.VITE_GOOGLE_CLIENT_ID).toBe('');

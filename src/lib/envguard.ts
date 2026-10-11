@@ -5,8 +5,6 @@
 // an evidence run passes explicitly (explicit process env beats every file).
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { sh } from './sh';
-import type { Repo } from './repo';
 
 export const PRODUCTION_PROJECT = 'huishouden-piekstra';
 /** The production project's number: it prefixes its web app id, sender id and OAuth client id. */
@@ -64,22 +62,15 @@ export interface Offence {
   keys: string[];
 }
 
-/** The repo's production Firebase API key (a public web key, kept as a repo variable), if gh can say. */
-export function productionApiKey(repo: Repo): string | undefined {
-  const r = sh(['gh', 'variable', 'get', 'VITE_FIREBASE_API_KEY', '-R', repo.slug]);
-  return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
-}
-
-/** Everything that would reach the build's VITE_ values and names production: env files, then the process environment. */
-export function findOffences(root: string, processEnv: Record<string, string | undefined> = process.env, apiKey?: string): Offence[] {
-  const out: Offence[] = [];
-  for (const f of envFiles(root)) {
-    const keys = productionKeys(parseDotenv(readFileSync(join(root, f), 'utf8')), apiKey);
-    if (keys.length) out.push({ source: f, keys });
+/** What a refused run carries, so commands can report it as data (key names only, never values). */
+export class ProductionEnvRefused extends Error {
+  constructor(
+    readonly offences: Offence[],
+    readonly kind: 'local' | 'staging',
+  ) {
+    super(refusal(offences, kind));
+    this.name = 'ProductionEnvRefused';
   }
-  const keys = productionKeys(processEnv, apiKey);
-  if (keys.length) out.push({ source: 'the process environment', keys });
-  return out;
 }
 
 export function refusal(offences: Offence[], kind: 'local' | 'staging'): string {
@@ -90,21 +81,36 @@ export function refusal(offences: Offence[], kind: 'local' | 'staging'): string 
   ].join('\n');
 }
 
-/** Throws when anything the build would read names production. */
-export function assertNoProduction(repo: Repo, kind: 'local' | 'staging', processEnv: Record<string, string | undefined> = process.env): void {
-  const offences = findOffences(repo.root, processEnv, productionApiKey(repo));
-  if (offences.length) throw new Error(refusal(offences, kind));
+export interface GuardOptions {
+  kind: 'local' | 'staging';
+  /** The repo's production VITE_FIREBASE_API_KEY (a public web key, a repo variable), when known. Without it that one check is skipped and `log` says so. */
+  productionApiKey?: string;
+  processEnv?: Record<string, string | undefined>;
+  log?: (line: string) => void;
 }
 
 /**
- * The env a run passes to its build and tests: every Firebase key and every other VITE_ key that
- * any env file defines is set explicitly (to `base`'s value, else empty), so no file, `.env.local`
- * included, decides anything. Process environment always beats files in Vite and bun.
+ * The env a run passes to its build and tests, or a refusal. Reads the env files once; refuses
+ * (ProductionEnvRefused) when any file, the process environment or `base` itself (the values the
+ * run will use) names production. Otherwise every Firebase key and every other VITE_ key a file or
+ * the process defines is set explicitly, to `base`'s value or empty, so no file, `.env.local`
+ * included, decides anything (process environment beats files in Vite and bun).
  */
-export function explicitEnv(root: string, base: Record<string, string>, processEnv: Record<string, string | undefined> = process.env): Record<string, string> {
+export function guardedEnv(root: string, base: Record<string, string>, { kind, productionApiKey, processEnv = process.env, log }: GuardOptions): Record<string, string> {
+  if (!productionApiKey) log?.('production API key unknown (no gh variable VITE_FIREBASE_API_KEY): that one comparison is skipped; project id, auth domain and project-number checks still apply');
+  const files = envFiles(root).map((f) => [f, parseDotenv(readFileSync(join(root, f), 'utf8'))] as const);
+  const offences: Offence[] = [];
+  for (const [f, vars] of files) {
+    const keys = productionKeys(vars, productionApiKey);
+    if (keys.length) offences.push({ source: f, keys });
+  }
+  for (const [source, vars] of [['the process environment', processEnv], ["the run's own values", base]] as const) {
+    const keys = productionKeys(vars, productionApiKey);
+    if (keys.length) offences.push({ source, keys });
+  }
+  if (offences.length) throw new ProductionEnvRefused(offences, kind);
   const keys = new Set<string>([...FIREBASE_KEYS, ...Object.keys(base)]);
-  for (const f of envFiles(root)) for (const k of Object.keys(parseDotenv(readFileSync(join(root, f), 'utf8')))) if (k.startsWith('VITE_')) keys.add(k);
+  for (const [, vars] of files) for (const k of Object.keys(vars)) if (k.startsWith('VITE_')) keys.add(k);
   for (const k of Object.keys(processEnv)) if (k.startsWith('VITE_')) keys.add(k);
   return Object.fromEntries([...keys].map((k) => [k, base[k] ?? '']));
 }
-

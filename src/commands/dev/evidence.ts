@@ -6,6 +6,7 @@ import { evidenceDir, post, save, type Evidence } from '../../lib/evidence';
 import { changedFiles, fetchBase } from '../../lib/repo';
 import { prAfterSync, syncedRepo } from '../../lib/kitbump';
 
+import { ProductionEnvRefused } from '../../lib/envguard';
 import { runLocal, runStaging } from '../../lib/runs';
 
 const NEEDS_STAGING: [RegExp, string][] = [
@@ -40,7 +41,11 @@ register({
     const reason = ctx.flags.staging || ctx.flags.local ? `--${mode}` : auto.reason;
     ctx.log(`Evidence for ${repo.head.slice(0, 7)}: ${mode} (${reason})`);
     const opts = { json: ctx.json, log: ctx.log, outDir: evidenceDir(repo, repo.head), screenshots: !ctx.flags['no-screenshots'], emulators: !ctx.flags['no-emulators'] };
-    const r = mode === 'staging' ? await runStaging(repo, opts) : await runLocal(repo, opts);
+    const r = await (mode === 'staging' ? runStaging(repo, opts) : runLocal(repo, opts)).catch((e: unknown) => {
+      if (e instanceof ProductionEnvRefused) return e;
+      throw e;
+    });
+    if (r instanceof ProductionEnvRefused) return { ok: false, data: { error: 'production env', kind: r.kind, offences: r.offences }, text: r.message };
     const evidence: Evidence = { sha: repo.head, mode, ok: r.steps.ok, url: r.url, steps: r.steps.records, shots: r.shots, reason };
     save(repo, evidence);
     let posted: string | undefined;
