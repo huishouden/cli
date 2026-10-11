@@ -14,6 +14,18 @@ export function latestKitTag(): string {
   return latest;
 }
 
+/**
+ * The commit a kit tag points to: the peeled commit of an annotated tag
+ * (`git ls-remote <repo> refs/tags/vX.Y.Z^{}`), else the tag's own object. Undefined when GitHub
+ * cannot say, so a caller never pins a guess.
+ */
+export function kitTagSha(tag: string): string | undefined {
+  const ask = (ref: string) => {
+    const r = sh(['git', 'ls-remote', 'https://github.com/huishouden/pwa-kit.git', ref], { timeoutMs: 20_000 });
+    return r.code === 0 ? /^([0-9a-f]{40})\t/m.exec(r.stdout)?.[1] : undefined;
+  };
+  return ask(`refs/tags/${tag}^{}`) ?? ask(`refs/tags/${tag}`);
+}
 
 export const kitTarballUrl = (tag: string) => `https://github.com/huishouden/pwa-kit/releases/download/${tag}/pwa-kit-${tag.slice(1)}.tgz`;
 

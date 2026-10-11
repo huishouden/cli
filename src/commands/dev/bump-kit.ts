@@ -1,5 +1,5 @@
 // hh dev bump-kit: @huishouden/pwa-kit to its latest tag, and the reusable workflow refs
-// (huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z) with it, then lint and unit tests. Run it whenever
+// (huishouden/pwa-kit/{.github/workflows,actions}/…@<commit sha> # vX.Y.Z, pinned by commit) with it, then lint and unit tests. Run it whenever
 // you touch a repo (hh dev verify|evidence|review|ready do it for you as a commit); nothing bumps dependencies on a schedule.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,13 +8,13 @@ import { hasScript, repoAt } from '../../lib/repo';
 import { sh, stream } from '../../lib/sh';
 import { latestKitTag } from '../../lib/kit';
 import { kitHasTarball } from '../../lib/kit';
-import { kitPin, kitSpec, writeKitBump } from '../../lib/kitbump';
+import { kitPin, kitSpec, requireTagSha, writeKitBump } from '../../lib/kitbump';
 import { isExactTag } from '../../lib/update';
 
 register({
   group: 'dev',
   name: 'bump-kit',
-  summary: 'Move @huishouden/pwa-kit (its release tarball, else the git tag) and the pwa-kit workflow refs to the latest exact tag, install, lint and unit-test',
+  summary: 'Move @huishouden/pwa-kit (its release tarball, else the git tag) to the latest exact tag and pin the pwa-kit workflow and action refs by commit (`@<sha> # vX.Y.Z`), install, lint and unit-test',
   usage: 'hh dev bump-kit [--to=vX.Y.Z] [--no-check] [--json]',
   valued: ['to'],
   async run(ctx) {
@@ -31,9 +31,16 @@ register({
       return { ok: false, data: { error }, text: error };
     }
     const spec = kitSpec(to, kitHasTarball(to));
-    const written = writeKitBump(repo.root, to, spec)!;
+    let written: NonNullable<ReturnType<typeof writeKitBump>>;
+    try {
+      written = writeKitBump(repo.root, to, spec, requireTagSha)!;
+    } catch (e) {
+      sh(['git', 'checkout', '--', ...files], { cwd: repo.root });
+      const error = (e as Error).message;
+      return { ok: false, data: { error }, text: error };
+    }
     const workflows = written.workflows;
-    if (!written.pkg) return { ok: true, data: { from, to, changed: workflows.length > 0, workflows }, text: workflows.length ? `pwa-kit is already ${to}; workflow refs now ${to}: ${workflows.join(', ')}` : `pwa-kit is already ${to}` };
+    if (!written.pkg) return { ok: true, data: { from, to, changed: workflows.length > 0, workflows }, text: workflows.length ? `pwa-kit is already ${to}; workflow refs now pinned at ${to}: ${workflows.join(', ')}` : `pwa-kit is already ${to}` };
     ctx.log(`pwa-kit ${from} → ${to} (${spec})`);
     const steps: { step: string; code: number }[] = [];
     for (const [step, cmd] of [

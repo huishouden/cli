@@ -1,8 +1,8 @@
 // Reusing a review or evidence across a kit bump. The bump moves the head but changes nothing the
 // reviewer or the tests judged, so a result for the earlier commit stands when everything that
 // changed since is the kit pin, bun.lock and the kit's workflow refs, and nothing else.
-import { kitTarballUrl } from './kit';
-import { PIN, WORKFLOW_REF, kitPin, kitSpec } from './kitbump';
+import { kitTagSha, kitTarballUrl } from './kit';
+import { PIN, kitPin, kitRefs, kitSpec, mapKitRefs } from './kitbump';
 import { compare } from './semver';
 import { sh } from './sh';
 
@@ -13,7 +13,7 @@ export interface CarryVerdict {
 
 /** Text with the kit version replaced by a placeholder: two texts that differ only by it are equal. */
 const withoutKitVersion = (path: string, text: string): string =>
-  path === 'package.json' ? text.replace(PIN, '$1<kit>$3') : text.replace(WORKFLOW_REF, '$1<kit>');
+  path === 'package.json' ? text.replace(PIN, '$1<kit>$3') : mapKitRefs(text, (r) => `${r.head}<kit>${r.quote}${r.rest ? ` # ${r.rest}` : ''}`);
 
 const EXACT = /^v\d+\.\d+\.\d+$/;
 
@@ -27,26 +27,30 @@ function pinMoveOk(before: string, after: string): string | null {
   return null;
 }
 
-/** A workflow: every kit ref after is an exact tag, and none goes back. */
-function refMoveOk(before: string, after: string): string | null {
-  const b = [...before.matchAll(WORKFLOW_REF)].map((m) => m[2]);
-  const a = [...after.matchAll(WORKFLOW_REF)].map((m) => m[2]);
-  const bad = a.find((r) => !EXACT.test(r));
-  if (bad) return `a kit workflow ref is ${bad}, not an exact vX.Y.Z`;
-  const back = a.find((r, i) => EXACT.test(b[i] ?? '') && compare(r.slice(1), b[i].slice(1)) < 0);
-  return back ? `a kit workflow ref goes back to ${back}` : null;
+/**
+ * A workflow: every kit ref after is an exact tag or a commit pin (`@<40-hex> # vX.Y.Z`) whose
+ * commit is that tag's, and none goes back.
+ */
+function refMoveOk(before: string, after: string, tagCommit: (tag: string) => string | undefined): string | null {
+  const b = kitRefs(before);
+  const a = kitRefs(after);
+  for (const r of a) {
+    if (r.isSha) {
+      if (!r.version) return `a kit ref pins ${r.ref.slice(0, 7)} without a trailing "# vX.Y.Z" comment`;
+      const commit = tagCommit(r.version);
+      if (!commit) return `could not look up the commit of ${r.version} to check a kit ref`;
+      if (commit !== r.ref) return `a kit ref pins ${r.ref.slice(0, 7)}, not ${r.version} (${commit.slice(0, 7)})`;
+    } else if (!EXACT.test(r.ref)) return `a kit workflow ref is ${r.ref}, not an exact vX.Y.Z or a commit pin`;
+  }
+  const back = a.find((r, i) => r.version && b[i]?.version && compare(r.version.slice(1), b[i].version!.slice(1)) < 0);
+  return back ? `a kit workflow ref goes back to ${back.version}` : null;
 }
 
 const LOCK_WORKSPACE = /^([+-])\s*"@huishouden\/pwa-kit": "([^"]+)",?$/;
 const LOCK_ENTRY = /^([+-])\s*"@huishouden\/pwa-kit": \["@huishouden\/pwa-kit@([^"]+)", \{.*\}, "[^"]*"\],?$/;
 
 /** The commit a kit tag points to (peeled), from the kit's repository; undefined when it cannot be asked. */
-export function remoteTagCommit(tag: string): string | undefined {
-  const r = sh(['git', 'ls-remote', 'https://github.com/huishouden/pwa-kit.git', `refs/tags/${tag}`, `refs/tags/${tag}^{}`], { timeoutMs: 20_000 });
-  if (r.code !== 0) return undefined;
-  const lines = r.stdout.split('\n').filter(Boolean).map((l) => l.split('\t'));
-  return (lines.find((l) => l[1]?.endsWith('^{}')) ?? lines[0])?.[0];
-}
+export const remoteTagCommit = kitTagSha;
 
 export interface CarryOptions {
   /** The commit a kit tag points to; defaults to asking GitHub. */
@@ -97,8 +101,8 @@ export function newestFirst(root: string, head: string, shas: string[]): string[
 /**
  * True when `from` is an ancestor of `to` and the tree difference is only: package.json with just
  * its pwa-kit pin changed (to huishouden/pwa-kit's release at an equal or later exact tag),
- * `.github/workflows/*.y(a)ml` with just their `huishouden/pwa-kit/.github/workflows/*@vX.Y.Z` refs
- * changed (to exact tags, none going back), and bun.lock changed only on the kit's own two lines, resolved to the release package.json pins. At
+ * `.github/workflows/*.y(a)ml` with just their `huishouden/pwa-kit/{.github/workflows,actions}/…` refs
+ * changed (to exact tags or `@<sha> # vX.Y.Z` commit pins of them, none going back), and bun.lock changed only on the kit's own two lines, resolved to the release package.json pins. At
  * least one file must have changed; any other file or change refuses.
  */
 export function kitOnlyDiff(root: string, from: string, to: string, opts: CarryOptions = {}): CarryVerdict {
@@ -122,7 +126,7 @@ export function kitOnlyDiff(root: string, from: string, to: string, opts: CarryO
     // A file that did not exist on one side (a new workflow, say) is a change beyond the pins.
     if (before.code !== 0 || after.code !== 0) return no(`${f} was added or removed`);
     if (withoutKitVersion(f, before.stdout) !== withoutKitVersion(f, after.stdout)) return no(`${f} changed beyond the kit version`);
-    const why = f === 'package.json' ? pinMoveOk(before.stdout, after.stdout) : refMoveOk(before.stdout, after.stdout);
+    const why = f === 'package.json' ? pinMoveOk(before.stdout, after.stdout) : refMoveOk(before.stdout, after.stdout, opts.tagCommit ?? remoteTagCommit);
     if (why) return no(why);
   }
   return { ok: true, detail: `only the kit pin, bun.lock and workflow refs changed since ${from.slice(0, 7)}` };
