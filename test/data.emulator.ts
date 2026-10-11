@@ -44,11 +44,21 @@ async function account(email: string): Promise<{ uid: string; refreshToken: stri
 const homes: Record<string, string> = {};
 const refreshTokens: Record<string, string> = {};
 
+/** `who`'s ID token from the Auth emulator, as hh mints it. */
+async function idTokenOf(who: string): Promise<string> {
+  const t = (await (await fetch(`${AUTH}/securetoken.googleapis.com/v1/token?key=k`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshTokens[who] }) })).json()) as { id_token: string };
+  return t.id_token;
+}
+
 /** A write as `who` straight to Firestore, past hh's own checks: what the rules alone decide. */
 async function writeAs(who: string, path: string, mask: string, data: Record<string, unknown>): Promise<number> {
-  const t = (await (await fetch(`${AUTH}/securetoken.googleapis.com/v1/token?key=k`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshTokens[who] }) })).json()) as { id_token: string };
-  const res = await fetch(`${DOCS}/${path}?updateMask.fieldPaths=${encodeURIComponent(mask)}`, { method: 'PATCH', headers: { Authorization: `Bearer ${t.id_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: (value(data) as { mapValue: { fields: object } }).mapValue.fields }) });
+  const res = await fetch(`${DOCS}/${path}?updateMask.fieldPaths=${encodeURIComponent(mask)}`, { method: 'PATCH', headers: { Authorization: `Bearer ${await idTokenOf(who)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: (value(data) as { mapValue: { fields: object } }).mapValue.fields }) });
   return res.status;
+}
+
+/** A read as `who` straight from Firestore: the HTTP status the rules decide. */
+async function readAs(who: string, path: string): Promise<number> {
+  return (await fetch(`${DOCS}/${path}`, { headers: { Authorization: `Bearer ${await idTokenOf(who)}` } })).status;
 }
 
 /** `hh …` as `who`, in its own process, with that person's sign-in store. */
@@ -193,7 +203,11 @@ describe('hh data, as the person, under the rules', () => {
     expect(kid.out + kid.err).toContain("Baby's settings aren't available to kids.");
     expect(kid.out + kid.err).not.toContain(note);
     expect(kid.out + kid.err).not.toContain('19:00');
-    // The rules refuse them too, past hh's own check.
+    // The rules decide the same, past hh's own check: a helper reads them, a kid can't; neither writes.
+    for (const path of ['households/h1/babyContractionSettings/main', 'households/h1/babyKickSettings/main']) {
+      expect(await readAs(ALEX, path)).toBe(200);
+      expect(await readAs(KIM, path)).toBe(403);
+    }
     for (const who of [ALEX, KIM]) {
       expect(await writeAs(who, 'households/h1/babyContractionSettings/main', 'note', { note: 'x' })).toBe(403);
       expect(await writeAs(who, 'households/h1/babyKickSettings/main', 'target', { target: 3 })).toBe(403);
