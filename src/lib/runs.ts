@@ -159,7 +159,7 @@ async function householdRules(): Promise<string> {
   throw new Error(`rules: ${raw instanceof Error ? raw.message : raw.status}${viaGh ? `; gh api: ${viaGh.stderr.trim().slice(0, 200)}` : '; gh not found'}`);
 }
 
-async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions, guard: (base: Record<string, string>) => Record<string, string>) {
+async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions, emulatorEnv: Record<string, string>) {
   if (!opts.emulators || !hasScript(repo, 'e2e:emulator')) return;
   const java = useJava();
   if (!java.ok) {
@@ -178,7 +178,7 @@ async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions, guard: 
     rmSync(join(repo.root, 'dist'), { recursive: true, force: true });
     const ports = { VITE_EMULATOR_AUTH_PORT: String(auth), VITE_EMULATOR_FIRESTORE_PORT: String(firestore) };
     // Every VITE_ value explicit, so a .env.local cannot add or replace one.
-    const buildEnv = guard({ ...EMULATOR_ENV, ...ports });
+    const buildEnv = { ...emulatorEnv, ...ports };
     if ((await stream(['bun', 'run', 'build'], { cwd: repo.root, json: opts.json, env: buildEnv })) !== 0) throw new Error('emulator build failed');
     if (!own) await waitForEmulatorPorts(opts.log);
     const pv = await preview(repo);
@@ -201,8 +201,9 @@ export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult>
   // anything is built or run, no env file, variable or value may name production; every VITE_ value
   // is then passed explicitly, so a .env.local (which bun and Vite both read) decides nothing.
   const staged = stagingEnv(repo);
-  const guard = (base: Record<string, string>) => guardedEnv(repo.root, base, { kind: 'local', productionApiKey: staged.productionApiKey, log: opts.log });
-  const env = guard(staged.env);
+  const guard = (base: Record<string, string>, log?: (l: string) => void) => guardedEnv(repo.root, base, { kind: 'local', productionApiKey: staged.productionApiKey, log });
+  const env = guard(staged.env, opts.log);
+  const emulatorEnv = guard(EMULATOR_ENV);
   await common(repo, steps, env);
   if (hasScript(repo, 'build')) await steps.cmd('build', ['bun', 'run', 'build'], { cwd: repo.root, env });
   else steps.skip('build', 'no build script');
@@ -215,7 +216,7 @@ export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult>
       pv.stop();
     }
   } else if (opts.screenshots && !hasScript(repo, 'screenshots')) steps.skip('screenshots', 'no screenshots script');
-  if (steps.ok) await emulatorTests(repo, steps, opts, guard);
+  if (steps.ok) await emulatorTests(repo, steps, opts, emulatorEnv);
   return { steps, shots };
 }
 
@@ -223,8 +224,9 @@ export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult>
 export async function runStaging(repo: Repo, opts: RunOptions): Promise<RunResult> {
   const steps = new Steps(opts.log, opts.json);
   const { env: staged, site, productionApiKey } = stagingEnv(repo);
-  const guard = (base: Record<string, string>) => guardedEnv(repo.root, base, { kind: 'staging', productionApiKey, log: opts.log });
-  const env = guard(staged);
+  const guard = (base: Record<string, string>, log?: (l: string) => void) => guardedEnv(repo.root, base, { kind: 'staging', productionApiKey, log });
+  const env = guard(staged, opts.log);
+  const emulatorEnv = guard(EMULATOR_ENV);
   if (!site || !staged.VITE_FIREBASE_PROJECT_ID) throw new Error(`${repo.slug} has no STAGING_SITE / STAGING_VITE_FIREBASE_* variables (infra/bootstrap.sh --staging)`);
   if (!repo.appPath) throw new Error('no `base:` in .github/workflows/ci.yml: staging deploys need the app\'s path on the suite');
   const url = `https://${site}.web.app${repo.appPath}`;
@@ -246,7 +248,7 @@ export async function runStaging(repo: Repo, opts: RunOptions): Promise<RunResul
     else await steps.cmd('signed-in tests on staging', [...runner, 'bun', 'run', 'e2e:signed-in', ...grep], { cwd: repo.root, env: { ...env, BASE_URL: url } });
   }
   const shots = steps.ok ? await screenshotsAt(repo, steps, url, opts) : undefined;
-  if (steps.ok) await emulatorTests(repo, steps, opts, guard);
+  if (steps.ok) await emulatorTests(repo, steps, opts, emulatorEnv);
   // Leftovers of earlier runs (over a day old), since nothing sweeps staging on a schedule.
   await steps.run('staging cleanup (leftovers over a day old)', async () => (await sweepStaging(opts.log, opts.json)) === 0 || 'sweep failed; run hh ops staging-cleanup', { always: true });
   return { steps, shots, url };

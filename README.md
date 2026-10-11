@@ -106,7 +106,7 @@ not marked as the assistant's: they look as if you made them in the app.
 | `groceries list [list]`, `groceries add <name>`, `groceries check <item>` | Shopping lists |
 | `tasks add <name>` | A task, with `--due` |
 | `bills due` | Open bills (admins and members) |
-| `pet today [pet]`, `pet feeding <pet>`, `pet dose <pet> <medicine>`, `pet outing <pet> --pooped`, `pet routines [pet]`, `pet routine-done <routine>` | The feeding board, reminders, courses and outings (bathroom breaks, walks); logging |
+| `pet today [pet]`, `pet feeding <pet>`, `pet dose <pet> <medicine>`, `pet outing <pet> --pooped`, `pet routines [pet]`, `pet routine-done <routine>` | The feeding board, reminders, courses, outings (bathroom breaks, walks) and care routines (`pet routines` lists them, `pet routine-done` marks one done); logging |
 | `home upkeep`, `home event <title>` | Upkeep due; a regular event or a visit |
 | `appointment add <app> <title> <start>` | An appointment for a pet, the baby, a car or a person |
 | `contacts search <query>`, `contacts add <name>` | The household's contacts |
