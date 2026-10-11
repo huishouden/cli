@@ -191,7 +191,7 @@ test('kit sync: --no-bump-kit and a repo without a kit pin are skipped', () => {
 test('kit sync: uncommitted package.json is left alone; a failed install reverts', () => {
   const { root } = appRepo();
   writeFileSync(join(root, 'package.json'), readFileSync(join(root, 'package.json'), 'utf8') + ' ');
-  expect(kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', install: fakeInstall })).toMatchObject({ status: 'failed' });
+  expect(kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall })).toMatchObject({ status: 'failed' });
   git(root, 'checkout', '--', 'package.json');
   const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: () => false });
   expect(r).toMatchObject({ status: 'failed', reason: 'bun install failed' });
