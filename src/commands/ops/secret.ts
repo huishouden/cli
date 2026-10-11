@@ -1,41 +1,39 @@
 // hh ops secret store | push | where | rotate: a secret goes clipboard -> OS keychain -> GitHub, so
 // nobody pastes one into a chat or rolls a token just to move it. The value is never printed, never
 // in argv, and an agent never reads the keychain (only these commands do, in-process).
+import { platform } from 'node:os';
 import { flagString, register, type Ctx, type Result } from '../../registry';
-import { sh } from '../../lib/sh';
-import {
-  asyncSh,
-  clearClipboard,
-  configPath,
-  describeTarget,
-  ensureMainOnlyEnvironment,
-  listSecrets,
-  ORG,
-  placements,
-  readClipboard,
-  readFromKeychain,
-  resolveTargets,
-  saveToKeychain,
-  SECRETS,
-  specFor,
-  type AsyncRunner,
-  type Fetcher,
-  type Runner,
-  type SecretSpec,
-  type Target,
-} from '../../lib/secrets';
-import { setSecret } from './secret-set';
+import { clearClipboard, readClipboard } from '../../lib/clipboard';
+import { configDir } from '../../lib/credentials';
+import { ensureMainOnlyEnvironment, listSecrets, ORG, placements, setSecret, validEnv, validRepo, type RunAsync, type Target } from '../../lib/github-secrets';
+import { sh, shAsync, type ShResult, type ShOptions } from '../../lib/sh';
+import { configFile, describeTarget, keychainFor, KEYCHAIN_ACCOUNT, resolveTargets, SECRETS, specFor, type ConfigFile, type Fetcher, type SecretSpec } from '../../lib/secrets';
 
 /** Everything with a side effect, so tests can stand in for the keychain, the clipboard, gh and the network. */
 export interface Deps {
-  run: Runner;
-  arun: AsyncRunner;
+  run: (cmd: string[], opts?: ShOptions) => ShResult;
+  arun: RunAsync;
   fetcher: Fetcher;
+  os: string;
   env: Record<string, string | undefined>;
+  config: ConfigFile;
   now(): Date;
+  /** Progress the user reads (stderr). */
+  say(line: string): void;
 }
 
-export const realDeps = (): Deps => ({ run: sh, arun: asyncSh, fetcher: (url, init) => fetch(url, init), env: process.env, now: () => new Date() });
+export const realDeps = (): Deps => ({
+  run: sh,
+  arun: shAsync,
+  fetcher: (url, init) => fetch(url, init),
+  os: platform(),
+  env: process.env,
+  config: configFile(configDir()),
+  now: () => new Date(),
+  say: (line) => void process.stderr.write(`${line}\n`),
+});
+
+const keychain = (spec: SecretSpec, deps: Deps) => keychainFor(spec, deps.os, deps.run);
 
 const fail = (data: Record<string, unknown>, text: string): Result => ({ ok: false, data: { ...data, error: text }, text });
 
@@ -44,7 +42,7 @@ export async function storeSecret(name: string, deps: Deps = realDeps()): Promis
   if ('error' in spec) return fail({ name }, spec.error);
   let value: string;
   try {
-    value = readClipboard(deps.run);
+    value = readClipboard(deps.os, deps.env, deps.run);
   } catch (e) {
     return fail({ name }, (e as Error).message);
   }
@@ -53,11 +51,11 @@ export async function storeSecret(name: string, deps: Deps = realDeps()): Promis
   const rejected = spec.verify ? await spec.verify(value, deps.fetcher) : null;
   if (rejected) return fail({ name, stored: false }, `${rejected}. Nothing was stored; the clipboard is untouched.`);
   try {
-    saveToKeychain(spec, value, deps.run);
+    keychain(spec, deps).save(KEYCHAIN_ACCOUNT, value);
   } catch (e) {
     return fail({ name, stored: false }, (e as Error).message);
   }
-  const cleared = clearClipboard(deps.run);
+  const cleared = clearClipboard(deps.os, deps.env, deps.run);
   const text = `Stored ${name} in the keychain (service ${spec.service}, ${Buffer.byteLength(value)} bytes${spec.verify ? ', accepted by the provider' : ''}). Clipboard ${cleared ? 'cleared' : 'could not be cleared: clear it yourself'}.`;
   return { ok: true, data: { name, stored: true, service: spec.service, bytes: Buffer.byteLength(value), verified: !!spec.verify, clipboardCleared: cleared }, text };
 }
@@ -77,11 +75,11 @@ export async function pushSecret(name: string, opts: { repos?: string[]; env?: s
     opts = { ...opts, repos };
   }
   if (!opts.repos && !spec.targets.length) return fail({ name }, `${name} has no default targets: name them with --repos a,b`);
-  for (const r of opts.repos ?? []) if (!/^[A-Za-z0-9._-]{1,100}$/.test(r)) return fail({ name }, `not a repository name: ${r}`);
-  if (opts.env !== undefined && !/^[A-Za-z0-9._-]{1,100}$/.test(opts.env)) return fail({ name }, `not an environment name: ${opts.env}`);
+  for (const r of opts.repos ?? []) if (!validRepo(r)) return fail({ name }, `not a repository name: ${r}`);
+  if (opts.env !== undefined && !validEnv(opts.env)) return fail({ name }, `not an environment name: ${opts.env}`);
   let value: string | null;
   try {
-    value = readFromKeychain(spec, deps.run);
+    value = keychain(spec, deps).read(KEYCHAIN_ACCOUNT);
   } catch (e) {
     return fail({ name }, (e as Error).message);
   }
@@ -93,8 +91,8 @@ export async function pushSecret(name: string, opts: { repos?: string[]; env?: s
   // Companions are resolved once, before anything is set, so a missing one stops the push cleanly.
   const companions: { ghName: string; value: string }[] = [];
   for (const c of spec.companions ?? []) {
-    const v = await c.resolve(value, { fetcher: deps.fetcher, env: deps.env, configPath: configPath(deps.env) });
-    if (!v) return fail({ name }, `no value for ${c.ghName}: set HH_CLOUDFLARE_ACCOUNT_ID, or add cloudflareAccountId to ${configPath(deps.env)}`);
+    const v = await c.resolve(value, { fetcher: deps.fetcher, env: deps.env, config: deps.config });
+    if (!v) return fail({ name }, `no value for ${c.ghName}: ${c.missingHint}`);
     companions.push({ ghName: c.ghName, value: v });
   }
   const outcomes: PushOutcome[] = [];
@@ -145,21 +143,21 @@ export async function whereSecrets(deps: Deps = realDeps()): Promise<Result> {
   return { ok: !unexpected.length && !missing.length, data: { secrets: rows, unexpected, missing, unreadable }, text };
 }
 
-export async function rotateSecret(name: string, deps: Deps = realDeps(), wait: () => Promise<void> = async () => {}): Promise<Result> {
+export async function rotateSecret(name: string, deps: Deps = realDeps(), wait: (prompt: string) => Promise<void> = async () => {}): Promise<Result> {
   const spec = specFor(name);
   if ('error' in spec) return fail({ name }, spec.error);
   if (!spec.targets.length) return fail({ name }, `${name} has no default targets to rotate: use store, then push --repos`);
-  process.stderr.write(`1. Roll ${name} in its provider (${spec.name === 'cloudflare' ? 'Cloudflare dashboard > My Profile > API Tokens > Roll' : 'the provider\'s key page'}) and copy the new value. Do not paste it anywhere.\n`);
-  await wait();
+  deps.say(`1. Roll ${name} in its provider (${spec.rollHint}) and copy the new value. Do not paste it anywhere.`);
+  await wait('2. Copied the new value? Press Enter to store and push it (Ctrl-C to stop). ');
   let before: string | null;
   try {
-    before = readFromKeychain(spec, deps.run);
+    before = keychain(spec, deps).read(KEYCHAIN_ACCOUNT);
   } catch (e) {
     return fail({ name }, (e as Error).message);
   }
   let copied: string;
   try {
-    copied = readClipboard(deps.run);
+    copied = readClipboard(deps.os, deps.env, deps.run);
   } catch (e) {
     return fail({ name }, (e as Error).message);
   }
@@ -231,9 +229,9 @@ register({
   details: 'Prints what to roll and where, waits for Enter on a terminal (--yes or no terminal: goes straight on), refuses a clipboard that still holds the stored value, then store, push to the defaults and a check that each target was updated.',
   async run(ctx) {
     if (ctx.args.length !== 1) return fail({}, 'usage: hh ops secret rotate <name>');
-    const wait = async () => {
+    const wait = async (prompt: string) => {
       if (ctx.flags.yes === true || !process.stdin.isTTY) return;
-      process.stderr.write('2. Copied the new value? Press Enter to store and push it (Ctrl-C to stop). ');
+      process.stderr.write(prompt);
       for await (const _ of console) break;
     };
     return rotateSecret(ctx.args[0], realDeps(), wait);

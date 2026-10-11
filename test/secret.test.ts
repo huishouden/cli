@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { pushSecret, rotateSecret, storeSecret, whereSecrets, type Deps } from '../src/commands/ops/secret';
-import { clipboardReadCommand, findSecret, resolveTargets, specFor } from '../src/lib/secrets';
+import { clipboardReadCommand } from '../src/lib/clipboard';
+import { ensureMainOnlyEnvironment, listEnvironments, placements } from '../src/lib/github-secrets';
+import { cloudflareAccountId, findSecret, resolveTargets, specFor, type ConfigFile } from '../src/lib/secrets';
 import type { ShResult } from '../src/lib/sh';
 import '../src/commands/ops';
 
@@ -16,29 +18,35 @@ interface Call {
 }
 
 /** A machine with a clipboard, a keychain, gh and Cloudflare, all in memory; every call is recorded. */
-function machine(init: { clipboard?: string; keychain?: string; cfStatus?: number; secrets?: Record<string, string> } = {}) {
+function machine(init: { clipboard?: string; keychain?: string; os?: string } = {}) {
   const state = { clipboard: init.clipboard ?? '', keychain: init.keychain as string | undefined, calls: [] as Call[], ghSet: [] as { name: string; repo: string; env?: string; input: string }[], envs: new Set<string>() };
   const run = (cmd: string[], opts?: { input?: string }): ShResult => {
     state.calls.push({ cmd, input: opts?.input });
     const [prog, ...a] = cmd;
-    if (prog === 'pbpaste') return ok(`${state.clipboard}\n`);
-    if (prog === 'pbcopy') return (state.clipboard = opts?.input ?? ''), ok();
+    if (prog === 'pbpaste' || prog === 'xclip' && a.includes('-o')) return ok(`${state.clipboard}\n`);
+    if (prog === 'pbcopy' || prog === 'xclip') return (state.clipboard = opts?.input ?? ''), ok();
     if (prog === 'security' && a[0] === '-i') {
-      const m = /-w "(.*)"\n$/.exec(opts?.input ?? '');
-      state.keychain = m![1];
+      state.keychain = /-w "(.*)"\n$/.exec(opts?.input ?? '')![1];
       return ok();
     }
     if (prog === 'security' && a[0] === 'find-generic-password') return state.keychain === undefined ? { code: 44, stdout: '', stderr: 'not found' } : ok(`${state.keychain}\n`);
+    if (prog === 'secret-tool' && a[0] === 'store') return (state.keychain = opts?.input), ok();
+    if (prog === 'secret-tool' && a[0] === 'lookup') return state.keychain === undefined ? { code: 1, stdout: '', stderr: '' } : ok(state.keychain);
     if (prog === 'gh' && a[0] === 'secret' && a[1] === 'set') {
       state.ghSet.push({ name: a[2], repo: a[a.indexOf('-R') + 1], env: a.includes('--env') ? a[a.indexOf('--env') + 1] : undefined, input: opts?.input ?? '' });
       return ok();
     }
-    if (prog === 'gh' && a[0] === 'api' && a[1].includes('/environments/') && a.length <= 4) return state.envs.has(a[1]) ? ok('production') : { code: 1, stdout: '', stderr: 'HTTP 404' };
-    if (prog === 'gh' && a[0] === 'api' && a.includes('PUT')) return state.envs.add(a[a.indexOf('PUT') + 1]), ok();
-    if (prog === 'gh' && a[0] === 'api') return ok();
+    if (prog === 'gh' && a[0] === 'api') {
+      const path = a.find((x) => x.startsWith('repos/'))!;
+      if (a.includes('PUT')) return state.envs.add(path), ok();
+      if (a.includes('POST')) return ok();
+      if (path.endsWith('/deployment-branch-policies')) return ok('main');
+      return state.envs.has(path) ? ok('production') : { code: 1, stdout: '', stderr: 'HTTP 404' };
+    }
     return { code: 127, stdout: '', stderr: `unmocked ${cmd.join(' ')}` };
   };
   const fetched: string[] = [];
+  const config = memoryConfig();
   const deps: Deps = {
     run,
     arun: async () => ({ code: 1, stdout: '', stderr: 'unmocked' }),
@@ -49,10 +57,18 @@ function machine(init: { clipboard?: string; keychain?: string; cfStatus?: numbe
       const accepted = auth === `Bearer ${CF}` || auth === `Bearer ${CF_OLD}`;
       return { status: accepted ? 200 : 401, json: async () => (accepted ? { success: true, result: { status: 'active' } } : { success: false }) };
     },
-    env: { HH_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef', XDG_CONFIG_HOME: '/nonexistent-hh-test' },
+    os: init.os ?? 'darwin',
+    env: { HH_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef' },
+    config,
     now: () => new Date('2026-10-10T12:00:00Z'),
+    say: () => {},
   };
   return { state, deps, fetched };
+}
+
+function memoryConfig(initial: Record<string, unknown> = {}): ConfigFile & { data: Record<string, unknown> } {
+  const data = { ...initial };
+  return { path: '/memory/config.json', data, read: () => data, write: (patch) => void Object.assign(data, patch) };
 }
 
 const everything = (m: ReturnType<typeof machine>, extra: unknown) => JSON.stringify([m.state.calls.map((c) => c.cmd), extra]);
@@ -88,6 +104,16 @@ describe('secret store', () => {
     expect((await storeSecret('vapid-private', machine({ clipboard: 'anything' }).deps)).ok).toBe(true);
     expect((await storeSecret('vapid-private', machine({ clipboard: '' }).deps)).ok).toBe(false);
     expect((await storeSecret('Bad Name', machine({ clipboard: 'x' }).deps)).ok).toBe(false);
+  });
+
+  test('Linux: xclip and libsecret (secret-tool) take the same path', async () => {
+    const m = machine({ clipboard: CF, os: 'linux' });
+    expect((await storeSecret('cloudflare', m.deps)).ok).toBe(true);
+    expect(m.state.calls.some((c) => c.cmd[0] === 'secret-tool' && c.cmd[1] === 'store' && c.input === CF)).toBe(true);
+    expect(m.state.calls.some((c) => c.cmd.join(' ') === 'secret-tool store --label=Huishouden hh service huishouden-cloudflare-api-token account huishouden')).toBe(true);
+    expect(m.state.clipboard).toBe('');
+    expect((await pushSecret('cloudflare', { repos: ['portal'] }, m.deps)).ok).toBe(true);
+    expect(m.state.ghSet.find((x) => x.name === 'CLOUDFLARE_API_TOKEN')!.input).toBe(CF);
   });
 
   test('the clipboard commands per platform', () => {
@@ -137,9 +163,9 @@ describe('secret push', () => {
 
 describe('secret where', () => {
   const lists: Record<string, string> = {
-    'portal|': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2026-10-11T00:16:33Z"},{"name":"ALERT_EMAIL","updatedAt":"x"},{"name":"NEW_RELIC_API_KEY","updatedAt":"2026-10-04T18:32:34Z"}]',
-    'portal|production': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2026-10-11T00:16:47Z"}]',
-    'connector|production': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2026-10-11T00:16:49Z"}]',
+    'portal|': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2030-01-02T03:04:05Z"},{"name":"ALERT_EMAIL","updatedAt":"x"},{"name":"NEW_RELIC_API_KEY","updatedAt":"2030-01-01T00:00:00Z"}]',
+    'portal|production': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2030-01-02T03:04:06Z"}]',
+    'connector|production': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2030-01-02T03:04:07Z"}]',
     'pet|': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2026-10-01T00:00:00Z"}]',
   };
   test('lists names and updatedAt, flags repo-level and app-repo placements and what is missing', async () => {
@@ -194,4 +220,55 @@ test('registry', () => {
   expect(findSecret('cloudflare')!.service).toBe('huishouden-cloudflare-api-token');
   expect((specFor('some-key') as { ghName: string }).ghName).toBe('SOME_KEY');
   expect(resolveTargets(findSecret('cloudflare')!, undefined, undefined).unexpected).toEqual([]);
+});
+
+describe('Cloudflare account id', () => {
+  const ctx = (accounts: unknown[], env: Record<string, string> = {}, config = memoryConfig()) => ({
+    config,
+    env,
+    fetcher: async () => ({ status: 200, json: async () => ({ result: accounts }) }),
+  });
+  test('the only account of the token is fetched once and remembered', async () => {
+    const c = ctx([{ id: 'acc1' }]);
+    expect(await cloudflareAccountId(CF, c)).toBe('acc1');
+    expect(c.config.data).toEqual({ cloudflareAccountId: 'acc1' });
+    expect(await cloudflareAccountId(CF, { ...c, fetcher: async () => { throw new Error('no network needed'); } })).toBe('acc1');
+  });
+  test('several accounts are ambiguous; the environment variable and the config win', async () => {
+    expect(await cloudflareAccountId(CF, ctx([{ id: 'a' }, { id: 'b' }]))).toBeNull();
+    expect(await cloudflareAccountId(CF, ctx([], { HH_CLOUDFLARE_ACCOUNT_ID: 'fromenv' }))).toBe('fromenv');
+    expect(await cloudflareAccountId(CF, ctx([], {}, memoryConfig({ cloudflareAccountId: 'fromfile' })))).toBe('fromfile');
+  });
+  test('a push without any account id stops before setting anything', async () => {
+    const m = machine({ keychain: CF });
+    m.deps.env = {};
+    m.deps.fetcher = async () => ({ status: 200, json: async () => ({ result: [] }) });
+    const r = await pushSecret('cloudflare', {}, m.deps);
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('CLOUDFLARE_ACCOUNT_ID');
+    expect(m.state.ghSet).toEqual([]);
+  });
+});
+
+describe('environments', () => {
+  test('a half-made environment (exists, no main policy) is repaired; a failed policy is an error', () => {
+    const calls: string[] = [];
+    const run = (policies: string, post: number) => (cmd: string[]) => {
+      calls.push(cmd.join(' '));
+      if (cmd.includes('POST')) return { code: post, stdout: '', stderr: 'HTTP 403' };
+      if (cmd[2]?.endsWith('/deployment-branch-policies')) return { code: 0, stdout: policies, stderr: '' };
+      return { code: 0, stdout: 'production', stderr: '' };
+    };
+    expect(ensureMainOnlyEnvironment('portal', 'production', run('main', 0))).toEqual({ created: false });
+    expect(calls.some((c) => c.includes('POST'))).toBe(false);
+    expect(ensureMainOnlyEnvironment('portal', 'production', run('', 0))).toEqual({ created: false });
+    expect(calls.some((c) => c.includes('POST'))).toBe(true);
+    expect(() => ensureMainOnlyEnvironment('portal', 'production', run('', 1))).toThrow('could not allow main');
+  });
+
+  test('a repo whose environments cannot be listed is reported unreadable, not as holding nothing', async () => {
+    const arun = async (cmd: string[]) => (cmd[1] === 'repo' ? ok('portal\n') : cmd[1] === 'api' ? { code: 1, stdout: '', stderr: 'HTTP 403' } : ok('[]'));
+    expect(await listEnvironments('portal', arun)).toBeNull();
+    expect((await placements(new Set(['X']), arun)).unreadable).toEqual([{ repo: 'portal', env: '*' }]);
+  });
 });

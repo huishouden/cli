@@ -54,23 +54,23 @@ export function securityAddCommand(service: string, account: string, secret: str
   return `add-generic-password -U -s ${quoted(service)} -a ${quoted(account)} -w ${quoted(secret)}\n`;
 }
 
-export function keychainStore(run: Runner = sh): CredentialStore {
+export function keychainStore(run: Runner = sh, service = SERVICE): CredentialStore {
   return {
     name: 'macOS Keychain',
     save(account, secret) {
       if (/[\n\r]/.test(secret)) throw new Error('keychain: the secret has a line break');
-      const r = run(['security', '-i'], { input: securityAddCommand(SERVICE, account, secret) });
+      const r = run(['security', '-i'], { input: securityAddCommand(service, account, secret) });
       if (r.code !== 0) throw new Error(`keychain: ${r.stderr.trim() || `security exited ${r.code}`}`);
     },
     read(account) {
-      const r = run(['security', 'find-generic-password', '-s', SERVICE, '-a', account, '-w']);
+      const r = run(['security', 'find-generic-password', '-s', service, '-a', account, '-w']);
       if (r.code === 0) return r.stdout.trim() || null;
       // 44 is errSecItemNotFound; anything else (locked, access refused, no UI over SSH) is not "absent".
       if (r.code === 44) return null;
       throw new CredentialUnreadable('unavailable', 'macOS Keychain');
     },
     delete(account) {
-      const r = run(['security', 'delete-generic-password', '-s', SERVICE, '-a', account]);
+      const r = run(['security', 'delete-generic-password', '-s', service, '-a', account]);
       if (r.code === 0) return true;
       if (r.code === 44) return false;
       throw new CredentialUnreadable('unavailable', 'macOS Keychain');
@@ -78,15 +78,15 @@ export function keychainStore(run: Runner = sh): CredentialStore {
   };
 }
 
-export function libsecretStore(run: Runner = sh): CredentialStore {
+export function libsecretStore(run: Runner = sh, service = SERVICE): CredentialStore {
   return {
     name: 'libsecret',
     save(account, secret) {
-      const r = run(['secret-tool', 'store', '--label=Huishouden hh', 'service', SERVICE, 'account', account], { input: secret });
+      const r = run(['secret-tool', 'store', '--label=Huishouden hh', 'service', service, 'account', account], { input: secret });
       if (r.code !== 0) throw new Error(`secret-tool: ${r.stderr.trim() || `exited ${r.code}`}`);
     },
     read(account) {
-      const r = run(['secret-tool', 'lookup', 'service', SERVICE, 'account', account]);
+      const r = run(['secret-tool', 'lookup', 'service', service, 'account', account]);
       if (r.code === 0) return r.stdout.trim() || null;
       // secret-tool says nothing and exits 1 when there is no such secret; a message means it couldn't look.
       if (r.code === 1 && !r.stderr.trim()) return null;
@@ -94,10 +94,10 @@ export function libsecretStore(run: Runner = sh): CredentialStore {
     },
     delete(account) {
       // secret-tool clear exits 0 whether or not there was one: look first, so the answer is true.
-      const there = run(['secret-tool', 'lookup', 'service', SERVICE, 'account', account]);
+      const there = run(['secret-tool', 'lookup', 'service', service, 'account', account]);
       if (there.code !== 0 && there.stderr.trim()) throw new CredentialUnreadable('unavailable', 'libsecret keyring');
       if (there.code !== 0) return false;
-      if (run(['secret-tool', 'clear', 'service', SERVICE, 'account', account]).code !== 0) throw new CredentialUnreadable('unavailable', 'libsecret keyring');
+      if (run(['secret-tool', 'clear', 'service', service, 'account', account]).code !== 0) throw new CredentialUnreadable('unavailable', 'libsecret keyring');
       return true;
     },
   };

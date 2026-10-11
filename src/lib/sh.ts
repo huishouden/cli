@@ -66,3 +66,10 @@ export function runInherit(cmd: string[], env?: Record<string, string | undefine
   const p = Bun.spawnSync(cmd, { env: mergeEnv(env), stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
   return p.exitCode ?? 1;
 }
+
+/** Like `sh`, without blocking: for running many programs at once (the gh calls of `hh ops secret where`). */
+export async function shAsync(cmd: string[], opts: Pick<ShOptions, 'cwd' | 'env'> = {}): Promise<ShResult> {
+  const p = Bun.spawn(cmd, { cwd: opts.cwd, env: mergeEnv(opts.env), stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+  const [stdout, stderr] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  return { code: await p.exited, stdout, stderr };
+}
