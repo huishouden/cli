@@ -6,9 +6,8 @@ import { join } from 'node:path';
 import { register } from '../../registry';
 import { hasScript, repoAt } from '../../lib/repo';
 import { sh, stream } from '../../lib/sh';
-import { latestKitTag } from '../../lib/kit';
-import { kitHasTarball } from '../../lib/kit';
-import { kitPin, kitSpec, requireTagSha, writeKitBump } from '../../lib/kitbump';
+import { kitHasTarball, kitTagSha, latestKitTag, memoTagCommit } from '../../lib/kit';
+import { applyKitBump, kitPin, kitSpec, planKitBump } from '../../lib/kitbump';
 import { isExactTag } from '../../lib/update';
 
 register({
@@ -31,14 +30,14 @@ register({
       return { ok: false, data: { error }, text: error };
     }
     const spec = kitSpec(to, kitHasTarball(to));
-    let written: NonNullable<ReturnType<typeof writeKitBump>>;
-    try {
-      written = writeKitBump(repo.root, to, spec, requireTagSha)!;
-    } catch (e) {
-      sh(['git', 'checkout', '--', ...files], { cwd: repo.root });
-      const error = (e as Error).message;
+    const plan = planKitBump(repo.root, to, spec, memoTagCommit(kitTagSha));
+    if (!plan) return { ok: false, data: { error: 'no @huishouden/pwa-kit pinned to a tag' }, text: 'package.json pins no @huishouden/pwa-kit tag' };
+    if (!plan.ok) {
+      const error = `could not resolve the commit of pwa-kit ${plan.unresolved.join(', ')} (git ls-remote); nothing changed`;
       return { ok: false, data: { error }, text: error };
     }
+    applyKitBump(repo.root, plan);
+    const written = { pkg: plan.pkg, workflows: plan.files.map((f) => f.path).filter((p) => p !== 'package.json') };
     const workflows = written.workflows;
     if (!written.pkg) return { ok: true, data: { from, to, changed: workflows.length > 0, workflows }, text: workflows.length ? `pwa-kit is already ${to}; workflow refs now pinned at ${to}: ${workflows.join(', ')}` : `pwa-kit is already ${to}` };
     ctx.log(`pwa-kit ${from} → ${to} (${spec})`);

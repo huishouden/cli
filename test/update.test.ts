@@ -2,7 +2,7 @@ import { beforeEach, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bumpWorkflowRefs, pinKitRefs } from '../src/lib/kitbump';
+import { applyKitBump, pinKitRefs, planKitBump } from '../src/lib/kitbump';
 import { dailyUpdateWarning, installCommand, installFailure, installTag, isOutdated, parseReleaseTag } from '../src/lib/update';
 
 let dir: string;
@@ -45,17 +45,39 @@ test('up to date, offline, CI and opt-out are silent', () => {
 const SHA = 'abc1234fedcba9876543210fedcba9876543210f';
 const NEWER = '1234abcdfedcba9876543210fedcba9876543210';
 
+const SPEC = 'github:huishouden/pwa-kit#v0.99.0';
+const writePkg = () => writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { '@huishouden/pwa-kit': 'github:huishouden/pwa-kit#v0.98.0' } }, null, 2) + '\n');
+
 test('bump-kit pins workflow and action refs by commit with the version in a comment', () => {
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writePkg();
   const f = join(dir, '.github', 'workflows', 'ci.yml');
   writeFileSync(f, 'jobs:\n  pwa:\n    uses: huishouden/pwa-kit/.github/workflows/pwa.yml@v0.98.0\n    with: {}\n  s:\n    steps:\n      - uses: huishouden/pwa-kit/actions/leak-scan@v0 # PolyForm\n      - uses: other/thing@v1\n');
-  const shaOf = (t: string) => (t === 'v0.99.0' ? SHA : (() => { throw new Error(`unexpected ${t}`); })());
-  expect(bumpWorkflowRefs(dir, 'v0.99.0', shaOf)).toEqual(['.github/workflows/ci.yml']);
+  const asked: string[] = [];
+  const plan = planKitBump(dir, 'v0.99.0', SPEC, (t) => (asked.push(t), SHA));
+  expect(plan).toMatchObject({ ok: true, pkg: true });
+  expect(asked).toEqual(['v0.99.0']);
+  expect(readFileSync(f, 'utf8')).toContain('pwa.yml@v0.98.0'); // planning writes nothing
+  applyKitBump(dir, plan as never);
   const out = readFileSync(f, 'utf8');
   expect(out).toContain(`workflows/pwa.yml@${SHA} # v0.99.0\n`);
   expect(out).toContain(`actions/leak-scan@${SHA} # v0.99.0 PolyForm\n`);
   expect(out).toContain('other/thing@v1\n');
-  expect(bumpWorkflowRefs(dir, 'v0.99.0', () => { throw new Error('current pins are not looked up'); })).toEqual([]);
+  expect(readFileSync(join(dir, 'package.json'), 'utf8')).toContain(SPEC);
+  const again = planKitBump(dir, 'v0.99.0', SPEC, () => { throw new Error('current pins are not looked up'); });
+  expect(again).toMatchObject({ ok: true, pkg: false, files: [] });
+});
+
+test('bump-kit: an unresolvable tag plans nothing', () => {
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writePkg();
+  writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), 'uses: huishouden/pwa-kit/actions/leak-scan@v0.98.0\n');
+  expect(planKitBump(dir, 'v0.99.0', SPEC, () => undefined)).toEqual({ ok: false, unresolved: ['v0.99.0'] });
+});
+
+test('bump-kit: a current pin is kept verbatim, whatever its comment spacing', () => {
+  const t = `uses: huishouden/pwa-kit/actions/leak-scan@${SHA}  #v0.99.0 note\n`;
+  expect(pinKitRefs(t, 'v0.99.0', () => NEWER)).toBe(t);
 });
 
 test('bump-kit: a commit pin never goes back to a tag or to an older version; an older one moves up', () => {

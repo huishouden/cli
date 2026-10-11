@@ -1,7 +1,7 @@
 // Reusing a review or evidence across a kit bump. The bump moves the head but changes nothing the
 // reviewer or the tests judged, so a result for the earlier commit stands when everything that
 // changed since is the kit pin, bun.lock and the kit's workflow refs, and nothing else.
-import { kitTagSha, kitTarballUrl } from './kit';
+import { kitTagSha, kitTarballUrl, memoTagCommit, type TagCommit } from './kit';
 import { PIN, kitPin, kitRefs, kitSpec, mapKitRefs } from './kitbump';
 import { compare } from './semver';
 import { sh } from './sh';
@@ -31,7 +31,7 @@ function pinMoveOk(before: string, after: string): string | null {
  * A workflow: every kit ref after is an exact tag or a commit pin (`@<40-hex> # vX.Y.Z`) whose
  * commit is that tag's, and none goes back.
  */
-function refMoveOk(before: string, after: string, tagCommit: (tag: string) => string | undefined): string | null {
+function refMoveOk(before: string, after: string, tagCommit: TagCommit): string | null {
   const b = kitRefs(before);
   const a = kitRefs(after);
   for (const r of a) {
@@ -49,12 +49,9 @@ function refMoveOk(before: string, after: string, tagCommit: (tag: string) => st
 const LOCK_WORKSPACE = /^([+-])\s*"@huishouden\/pwa-kit": "([^"]+)",?$/;
 const LOCK_ENTRY = /^([+-])\s*"@huishouden\/pwa-kit": \["@huishouden\/pwa-kit@([^"]+)", \{.*\}, "[^"]*"\],?$/;
 
-/** The commit a kit tag points to (peeled), from the kit's repository; undefined when it cannot be asked. */
-export const remoteTagCommit = kitTagSha;
-
 export interface CarryOptions {
   /** The commit a kit tag points to; defaults to asking GitHub. */
-  tagCommit?: (tag: string) => string | undefined;
+  tagCommit?: TagCommit;
 }
 
 /**
@@ -64,7 +61,7 @@ export interface CarryOptions {
  * resolved from anywhere else, refuses; so does a tag whose commit cannot be looked up. A
  * tarball's integrity hash is not recomputed; a hash that does not match fails the install.
  */
-function lockOk(root: string, from: string, to: string, pinned: { tag: string; spec: string }, tagCommit: (tag: string) => string | undefined): string | null {
+function lockOk(root: string, from: string, to: string, pinned: { tag: string; spec: string }, tagCommit: TagCommit): string | null {
   const changed = sh(['git', 'diff', '-U0', from, to, '--', 'bun.lock'], { cwd: root }).stdout.split('\n').filter((l) => /^[+-](?![+-]{2})/.test(l));
   for (const l of changed) {
     const added = l.startsWith('+');
@@ -108,6 +105,7 @@ export function newestFirst(root: string, head: string, shas: string[]): string[
 export function kitOnlyDiff(root: string, from: string, to: string, opts: CarryOptions = {}): CarryVerdict {
   const git = (...a: string[]) => sh(['git', ...a], { cwd: root });
   const no = (detail: string): CarryVerdict => ({ ok: false, detail });
+  const tagCommit = memoTagCommit(opts.tagCommit ?? kitTagSha);
   if (git('merge-base', '--is-ancestor', from, to).code !== 0) return no(`${from.slice(0, 7)} is not an ancestor of ${to.slice(0, 7)}`);
   const files = git('diff', '--name-only', from, to).stdout.split('\n').filter(Boolean);
   if (!files.length) return no('no change since the reviewed commit');
@@ -115,7 +113,7 @@ export function kitOnlyDiff(root: string, from: string, to: string, opts: CarryO
     if (f === 'bun.lock') {
       const pinned = kitPin(git('show', `${to}:package.json`).stdout);
       if (!pinned) return no('package.json has no exact kit pin');
-      const why = lockOk(root, from, to, pinned, opts.tagCommit ?? remoteTagCommit);
+      const why = lockOk(root, from, to, pinned, tagCommit);
       if (why) return no(why);
       continue;
     }
@@ -126,7 +124,7 @@ export function kitOnlyDiff(root: string, from: string, to: string, opts: CarryO
     // A file that did not exist on one side (a new workflow, say) is a change beyond the pins.
     if (before.code !== 0 || after.code !== 0) return no(`${f} was added or removed`);
     if (withoutKitVersion(f, before.stdout) !== withoutKitVersion(f, after.stdout)) return no(`${f} changed beyond the kit version`);
-    const why = f === 'package.json' ? pinMoveOk(before.stdout, after.stdout) : refMoveOk(before.stdout, after.stdout, opts.tagCommit ?? remoteTagCommit);
+    const why = f === 'package.json' ? pinMoveOk(before.stdout, after.stdout) : refMoveOk(before.stdout, after.stdout, tagCommit);
     if (why) return no(why);
   }
   return { ok: true, detail: `only the kit pin, bun.lock and workflow refs changed since ${from.slice(0, 7)}` };
