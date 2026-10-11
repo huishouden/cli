@@ -7,3 +7,4 @@ import './monitoring';
 import './roles';
 import './profile-check';
 import './staging-cleanup';
+import './deploy-site';

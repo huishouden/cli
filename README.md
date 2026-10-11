@@ -129,6 +129,7 @@ household when you have several. `--staging` uses your staging sign-in.
 | `hh ops monitoring [--dry-run]` | Runs the portal's monitoring workflow (New Relic) and summarizes each step and what provisioning said |
 | `hh ops roles`, `hh ops roles set <email> <role>` | The household's people and roles; setting one as the signed-in admin, through the rules |
 | `hh ops profile-check [--fix]` | The org profile (huishouden/.github `profile/README.md`) and every app's and Worker's repo description against `apps.json` and the repos with a `wrangler.toml`. `--fix` fills empty descriptions from `apps.json` and opens a PR adding missing rows |
+| `hh ops deploy-site [--no-watch]` | Dispatches the portal's `ci` with `reconcile: true` and watches it: the portal's deploy is the only one that uploads to the asset CDN, so run this after an app's PR is merged and its deploy has finished. A no-op when the site is current |
 | `hh ops staging-cleanup` | Removes staging test households and people over a day old (the kit's `pwa-staging sweep`), with a token from your gcloud login impersonating the staging deploy account (needs Service Account Token Creator on it). `hh dev evidence --staging` runs it after its tests; nothing sweeps staging on a schedule |
 
 ## Tests
