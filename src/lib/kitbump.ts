@@ -7,11 +7,46 @@ import type { Ctx } from '../registry';
 import { currentPr, currentPrAt, repoAt, type PullRequest, type Repo } from './repo';
 import { compare } from './semver';
 import { sh } from './sh';
-import { kitHasTarball, kitTarballUrl, latestKitTag } from './kit';
+import { kitHasTarball, kitTarballUrl, latestKitTag, memoTagCommit, kitTagSha, type TagCommit } from './kit';
 
 export const PIN = /("@huishouden\/pwa-kit"\s*:\s*")([^"]+)(")/;
-export const WORKFLOW_REF = /(huishouden\/pwa-kit\/\.github\/workflows\/[\w.-]+\.ya?ml@)(\S+?)(?=["'\s]|$)/g;
-const TAG = /v\d+\.\d+\.\d+/;
+/** A kit reusable workflow or action reference, with its optional trailing `# comment`. */
+const KIT_REF = /(huishouden\/pwa-kit\/(?:\.github\/workflows\/[\w.-]+\.ya?ml|actions\/[\w/.-]+)@)([^\s"']+)(["']?)(?:[ \t]+#[ \t]*([^\r\n]*))?/g;
+const COMMENT_VERSION = /^(v\d+(?:\.\d+){0,2})(?=\s|$)\s*(.*)$/;
+const EXACT = /^v\d+\.\d+\.\d+$/;
+const SHA = /^[0-9a-f]{40}$/;
+
+export interface KitRef {
+  /** The matched text, verbatim. */
+  raw: string;
+  /** Everything up to and including the `@`. */
+  head: string;
+  ref: string;
+  quote: string;
+  /** The trailing comment without its leading version token. */
+  rest: string;
+  /** Pinned by a 40-hex commit. */
+  isSha: boolean;
+  /** The exact vX.Y.Z the ref stands for: the tag itself, or a commit pin's comment; null when unknown (or floating, like @v0). */
+  version: string | null;
+}
+
+function parseRef(m: RegExpMatchArray): KitRef {
+  const [raw, head, ref, quote, comment = ''] = m;
+  const c = COMMENT_VERSION.exec(comment.trim());
+  const isSha = SHA.test(ref);
+  const commentVersion = c && EXACT.test(c[1]) ? c[1] : null;
+  return { raw, head, ref, quote, rest: (c ? c[2] : comment).trim(), isSha, version: isSha ? commentVersion : EXACT.test(ref) ? ref : null };
+}
+
+export function kitRefs(text: string): KitRef[] {
+  return [...text.matchAll(KIT_REF)].map(parseRef);
+}
+
+/** Replaces every kit ref (and its comment) with what `fn` returns. */
+export function mapKitRefs(text: string, fn: (r: KitRef) => string): string {
+  return text.replace(KIT_REF, (...args) => fn(parseRef(args as unknown as RegExpMatchArray)));
+}
 
 /** The kit tag a package.json pins (`github:…#vX.Y.Z` or a release tarball URL), if it pins one. */
 export function kitPin(text: string): { spec: string; tag: string } | null {
@@ -26,46 +61,79 @@ export function kitSpec(tag: string, hasTarball: boolean): string {
   return hasTarball ? kitTarballUrl(tag) : `github:huishouden/pwa-kit#${tag}`;
 }
 
-/** Points every pwa-kit reusable-workflow reference at `to`; returns the files changed. */
-export function bumpWorkflowRefs(root: string, to: string): string[] {
-  const dir = join(root, '.github', 'workflows');
-  if (!existsSync(dir)) return [];
-  const changed: string[] = [];
-  for (const f of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
-    const text = readFileSync(join(dir, f), 'utf8');
-    const next = text.replace(WORKFLOW_REF, (_m, head) => `${head}${to}`);
-    if (next !== text) {
-      writeFileSync(join(dir, f), next);
-      changed.push(`.github/workflows/${f}`);
-    }
-  }
-  return changed;
+/** The version a ref should end up at: `to`, or its own when it is already ahead of `to`. */
+const targetOf = (r: KitRef, to: string): string => (r.version && compare(r.version.slice(1), to.slice(1)) > 0 ? r.version : to);
+
+/** A commit pin whose comment names `to` or a later version: nothing to do (and nothing to look up). */
+export const refIsCurrent = (r: KitRef, to: string): boolean => r.isSha && r.version !== null && targetOf(r, to) === r.version;
+
+/** The tags whose commits `pinKitRefs` will need for `text`. */
+export const tagsToResolve = (text: string, to: string): string[] => [...new Set(kitRefs(text).filter((r) => !refIsCurrent(r, to)).map((r) => targetOf(r, to)))];
+
+/**
+ * Kit refs at `to` as commit pins: `uses: huishouden/pwa-kit/<path>@<sha> # vX.Y.Z`. A current
+ * commit pin is left verbatim; a ref ahead of `to` keeps its version (a tag becomes its commit);
+ * nothing goes from a commit to a tag. `shaOf` must know every tag in `tagsToResolve`.
+ */
+export function pinKitRefs(text: string, to: string, shaOf: (tag: string) => string): string {
+  return mapKitRefs(text, (r) => {
+    if (refIsCurrent(r, to)) return r.raw;
+    const target = targetOf(r, to);
+    return `${r.head}${shaOf(target)}${r.quote} # ${target}${r.rest ? ` ${r.rest}` : ''}`;
+  });
 }
 
-/** Workflow files whose kit refs are not exactly `to` (a floating `@v0` counts as behind). */
+const workflowFiles = (root: string): string[] => {
+  const dir = join(root, '.github', 'workflows');
+  return existsSync(dir) ? readdirSync(dir).filter((n) => /\.ya?ml$/.test(n)).map((n) => `.github/workflows/${n}`) : [];
+};
+
+/** Workflow files whose kit refs are not all current commit pins at (or past) `to`. */
 export function behindWorkflows(root: string, to: string): string[] {
-  const dir = join(root, '.github', 'workflows');
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((n) => /\.ya?ml$/.test(n))
-    .filter((f) => [...readFileSync(join(dir, f), 'utf8').matchAll(WORKFLOW_REF)].some((m) => m[2] !== to))
-    .map((f) => `.github/workflows/${f}`);
+  return workflowFiles(root).filter((f) => tagsToResolve(readFileSync(join(root, f), 'utf8'), to).length > 0);
 }
 
-/** Rewrites the package pin (and the workflow refs) to `to`; returns what changed. */
-export function writeKitBump(root: string, to: string, spec: string): { from: string; pkg: boolean; workflows: string[] } | null {
-  const pkgPath = join(root, 'package.json');
-  const text = readFileSync(pkgPath, 'utf8');
-  const pin = kitPin(text);
+export type KitBumpPlan =
+  | { ok: true; from: string; pkg: boolean; files: { path: string; text: string }[] }
+  | { ok: false; unresolved: string[] };
+
+/**
+ * What moving the repo to kit `to` writes: the package pin at `spec` and every workflow and action
+ * ref pinned by commit, all computed in memory. A tag whose commit `tagCommit` cannot give is
+ * reported and nothing is planned, so a failed lookup never leaves a half-written tree. Null when
+ * the repo pins no kit tag.
+ */
+export function planKitBump(root: string, to: string, spec: string, tagCommit: TagCommit): KitBumpPlan | null {
+  const pkgText = readFileSync(join(root, 'package.json'), 'utf8');
+  const pin = kitPin(pkgText);
   if (!pin) return null;
+  const texts = workflowFiles(root).map((path) => ({ path, text: readFileSync(join(root, path), 'utf8') }));
+  const shas = new Map<string, string>();
+  const unresolved: string[] = [];
+  for (const tag of new Set(texts.flatMap((f) => tagsToResolve(f.text, to)))) {
+    const sha = tagCommit(tag);
+    if (sha) shas.set(tag, sha);
+    else unresolved.push(tag);
+  }
+  if (unresolved.length) return { ok: false, unresolved };
   const pkg = pin.spec !== spec;
-  if (pkg) writeFileSync(pkgPath, text.replace(PIN, `$1${spec}$3`));
-  return { from: pin.tag, pkg, workflows: bumpWorkflowRefs(root, to) };
+  const files = texts
+    .map((f) => ({ path: f.path, text: pinKitRefs(f.text, to, (t) => shas.get(t)!) , before: f.text }))
+    .filter((f) => f.text !== f.before)
+    .map(({ path, text }) => ({ path, text }));
+  if (pkg) files.unshift({ path: 'package.json', text: pkgText.replace(PIN, `$1${spec}$3`) });
+  return { ok: true, from: pin.tag, pkg, files };
+}
+
+export function applyKitBump(root: string, plan: Extract<KitBumpPlan, { ok: true }>): void {
+  for (const f of plan.files) writeFileSync(join(root, f.path), f.text);
 }
 
 export interface KitSyncDeps {
   latest?: () => string;
   hasTarball?: (tag: string) => boolean;
+  /** The commit a kit tag points to; undefined when it cannot be found. */
+  tagSha?: TagCommit;
   /** Runs `bun install`; true when it succeeded. */
   install?: (root: string) => boolean;
 }
@@ -121,7 +189,13 @@ export function kitSync(repo: Repo, opts: { skip?: boolean; push?: boolean; log:
     log(`! kit ${pin.tag} is behind ${to}, but ${existing.join(', ')} have uncommitted changes; not bumping (hh dev bump-kit)`);
     return { status: 'failed', reason: 'uncommitted changes in package.json, bun.lock or workflows', from: pin.tag, to };
   }
-  const written = writeKitBump(repo.root, to, spec)!;
+  const plan = planKitBump(repo.root, to, spec, deps.tagSha ?? memoTagCommit(kitTagSha));
+  if (!plan) return { status: 'skipped', reason: 'no pwa-kit pin' };
+  if (!plan.ok) {
+    log(`! kit ${to}: could not resolve the commit of ${plan.unresolved.join(', ')}; not bumping`);
+    return { status: 'failed', reason: 'kit tag commit unknown', from: pin.tag, to };
+  }
+  applyKitBump(repo.root, plan);
   const install = deps.install ?? ((root) => sh(['bun', 'install'], { cwd: root }).code === 0);
   if (!install(repo.root)) {
     git('checkout', '--', ...existing);
@@ -137,7 +211,7 @@ export function kitSync(repo: Repo, opts: { skip?: boolean; push?: boolean; log:
     log(`! kit ${to}: commit failed (${c.stderr.trim().slice(0, 200)}); reverted`);
     return { status: 'failed', reason: 'commit failed', from: pin.tag, to };
   }
-  log(`kit ${written.from} → ${to}: committed "chore: kit ${to}" (${files.join(', ')})`);
+  log(`kit ${plan.from} → ${to}: committed "chore: kit ${to}" (${files.join(', ')})`);
   let pushed = false;
   if (opts.push && git('rev-parse', '--abbrev-ref', '@{u}').code === 0) {
     const p = git('push', '-q');

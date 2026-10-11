@@ -2,7 +2,7 @@ import { beforeEach, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bumpWorkflowRefs } from '../src/lib/kitbump';
+import { applyKitBump, pinKitRefs, planKitBump } from '../src/lib/kitbump';
 import { dailyUpdateWarning, installCommand, installFailure, installTag, isOutdated, parseReleaseTag } from '../src/lib/update';
 
 let dir: string;
@@ -42,15 +42,51 @@ test('up to date, offline, CI and opt-out are silent', () => {
   expect(dailyUpdateWarning('1.3.2', { now: 99 * 86_400_000, dir, env: { HH_NO_UPDATE_CHECK: '1' }, latest: () => 'v9.0.0' })).toBeUndefined();
 });
 
-test('bump-kit moves the workflow ref with the package, leaving other refs', () => {
+const SHA = 'abc1234fedcba9876543210fedcba9876543210f';
+const NEWER = '1234abcdfedcba9876543210fedcba9876543210';
+
+const SPEC = 'github:huishouden/pwa-kit#v0.99.0';
+const writePkg = () => writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { '@huishouden/pwa-kit': 'github:huishouden/pwa-kit#v0.98.0' } }, null, 2) + '\n');
+
+test('bump-kit pins workflow and action refs by commit with the version in a comment', () => {
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writePkg();
   const f = join(dir, '.github', 'workflows', 'ci.yml');
-  writeFileSync(f, 'jobs:\n  pwa:\n    uses: huishouden/pwa-kit/.github/workflows/pwa.yml@v0\n    with: {}\n  s:\n    steps:\n      - uses: huishouden/pwa-kit/actions/leak-scan@v0\n');
-  expect(bumpWorkflowRefs(dir, 'v0.99.0')).toEqual(['.github/workflows/ci.yml']);
+  writeFileSync(f, 'jobs:\n  pwa:\n    uses: huishouden/pwa-kit/.github/workflows/pwa.yml@v0.98.0\n    with: {}\n  s:\n    steps:\n      - uses: huishouden/pwa-kit/actions/leak-scan@v0 # PolyForm\n      - uses: other/thing@v1\n');
+  const asked: string[] = [];
+  const plan = planKitBump(dir, 'v0.99.0', SPEC, (t) => (asked.push(t), SHA));
+  expect(plan).toMatchObject({ ok: true, pkg: true });
+  expect(asked).toEqual(['v0.99.0']);
+  expect(readFileSync(f, 'utf8')).toContain('pwa.yml@v0.98.0'); // planning writes nothing
+  applyKitBump(dir, plan as never);
   const out = readFileSync(f, 'utf8');
-  expect(out).toContain('workflows/pwa.yml@v0.99.0\n');
-  expect(out).toContain('actions/leak-scan@v0\n');
-  expect(bumpWorkflowRefs(dir, 'v0.99.0')).toEqual([]);
+  expect(out).toContain(`workflows/pwa.yml@${SHA} # v0.99.0\n`);
+  expect(out).toContain(`actions/leak-scan@${SHA} # v0.99.0 PolyForm\n`);
+  expect(out).toContain('other/thing@v1\n');
+  expect(readFileSync(join(dir, 'package.json'), 'utf8')).toContain(SPEC);
+  const again = planKitBump(dir, 'v0.99.0', SPEC, () => { throw new Error('current pins are not looked up'); });
+  expect(again).toMatchObject({ ok: true, pkg: false, files: [] });
+});
+
+test('bump-kit: an unresolvable tag plans nothing', () => {
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writePkg();
+  writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), 'uses: huishouden/pwa-kit/actions/leak-scan@v0.98.0\n');
+  expect(planKitBump(dir, 'v0.99.0', SPEC, () => undefined)).toEqual({ ok: false, unresolved: ['v0.99.0'] });
+});
+
+test('bump-kit: a current pin is kept verbatim, whatever its comment spacing', () => {
+  const t = `uses: huishouden/pwa-kit/actions/leak-scan@${SHA}  #v0.99.0 note\n`;
+  expect(pinKitRefs(t, 'v0.99.0', () => NEWER)).toBe(t);
+});
+
+test('bump-kit: a commit pin never goes back to a tag or to an older version; an older one moves up', () => {
+  const ahead = `uses: huishouden/pwa-kit/actions/leak-scan@${NEWER} # v0.120.0\n`;
+  expect(pinKitRefs(ahead, 'v0.99.0', () => SHA)).toBe(ahead);
+  expect(pinKitRefs('uses: huishouden/pwa-kit/actions/leak-scan@v0.120.0\n', 'v0.99.0', (t) => (t === 'v0.120.0' ? NEWER : SHA))).toBe(ahead);
+  expect(pinKitRefs(`uses: huishouden/pwa-kit/actions/leak-scan@${NEWER} # v0.98.0\n`, 'v0.99.0', () => SHA)).toBe(`uses: huishouden/pwa-kit/actions/leak-scan@${SHA} # v0.99.0\n`);
+  // a pin whose comment is not an exact version is rewritten; a quoted ref keeps its quote
+  expect(pinKitRefs(`uses: "huishouden/pwa-kit/actions/license-check@${NEWER}" # v0\n`.replace('" #', '"  #'), 'v0.99.0', () => SHA)).toBe(`uses: "huishouden/pwa-kit/actions/license-check@${SHA}" # v0.99.0\n`);
 });
 
 test('next-version: tag and release only for feat, fix, perf, refactor or breaking commits since the last tag', () => {

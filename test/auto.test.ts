@@ -137,63 +137,81 @@ function appRepo(pin = 'github:huishouden/pwa-kit#v0.94.0', ref = 'v0.94.0', bra
 
 const LOCK = (pin: string, sha: string, owner = 'huishouden') => `        "@huishouden/pwa-kit": "${pin}",\n    "@huishouden/pwa-kit": ["@huishouden/pwa-kit@github:${owner}/pwa-kit#${sha}", {}, "huishouden-pwa-kit-${sha}"],\n    "zod": ["zod@4.0.0", {}, "sha512-aaa"],\n`;
 
+/** The commit every fake kit tag points to. */
+const SHA = 'abc1234fedcba9876543210fedcba9876543210f';
+const tagSha = () => SHA;
+
 const logs: string[] = [];
 const log = (l: string) => logs.push(l);
 const fakeInstall = (root: string) => (writeFileSync(join(root, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234')), true);
 
 test('kit sync: behind repo gets "chore: kit vX.Y.Z" on the branch, pushed, lock and workflow refs included', () => {
   const { root, origin } = appRepo();
-  const r = kitSync(repoAt(root), { push: true, log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall });
+  const r = kitSync(repoAt(root), { push: true, log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha });
   expect(r).toMatchObject({ status: 'bumped', from: 'v0.94.0', to: 'v0.98.0', pushed: true });
   expect(r.files?.sort()).toEqual(['.github/workflows/ci.yml', 'bun.lock', 'package.json']);
   expect(git(root, 'log', '-1', '--format=%s')).toBe('chore: kit v0.98.0');
   expect(git(root, 'show', '--stat', '--format=', 'HEAD')).toContain('package.json');
   expect(kitPin(readFileSync(join(root, 'package.json'), 'utf8'))).toEqual({ spec: 'github:huishouden/pwa-kit#v0.98.0', tag: 'v0.98.0' });
-  expect(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')).toContain('pwa.yml@v0.98.0');
+  expect(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')).toContain(`pwa.yml@${SHA} # v0.98.0`);
   expect(git(origin, 'log', '-1', '--format=%s', 'feat')).toBe('chore: kit v0.98.0');
   expect(git(root, 'status', '--porcelain')).toBe('');
 });
 
 test('kit sync: uses the release tarball URL when the kit release has one', () => {
   const { root } = appRepo();
-  kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => true, install: fakeInstall });
+  kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => true, install: fakeInstall, tagSha });
   expect(kitPin(readFileSync(join(root, 'package.json'), 'utf8'))).toEqual({ spec: 'https://github.com/huishouden/pwa-kit/releases/download/v0.98.0/pwa-kit-0.98.0.tgz', tag: 'v0.98.0' });
 });
 
 test('kit sync: current, ahead, floating refs, main, --no-bump-kit and no pin', () => {
-  const a = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
-  expect(kitSync(repoAt(a.root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall }).status).toBe('current');
-  expect(kitSync(repoAt(a.root), { log }, { latest: () => 'v0.97.0', hasTarball: () => false, install: fakeInstall }).status).toBe('current');
+  const a = appRepo('github:huishouden/pwa-kit#v0.98.0', `${SHA} # v0.98.0`);
+  expect(kitSync(repoAt(a.root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha }).status).toBe('current');
+  expect(kitSync(repoAt(a.root), { log }, { latest: () => 'v0.97.0', hasTarball: () => false, install: fakeInstall, tagSha }).status).toBe('current');
   expect(git(a.root, 'log', '--format=%s', '-1')).toBe('feat: app');
+});
+
+test('kit sync: a tag whose commit cannot be resolved is not pinned; nothing is left changed', () => {
+  const { root } = appRepo();
+  const r = kitSync(repoAt(root), { log }, { ...BEHIND, tagSha: () => undefined });
+  expect(r).toMatchObject({ status: 'failed', reason: 'kit tag commit unknown' });
+  expect(git(root, 'status', '--porcelain')).toBe('');
+});
+
+test('kit sync: a manual commit pin at the current version is kept, and a behind package moves with it', () => {
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.94.0', `${SHA} # v0.98.0`);
+  const r = kitSync(repoAt(root), { log }, BEHIND);
+  expect(r.status).toBe('bumped');
+  expect(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')).toContain(`pwa.yml@${SHA} # v0.98.0\n`);
 });
 
 test('kit sync: a floating workflow ref counts as behind', () => {
   const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0');
-  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall });
+  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha });
   expect(r.status).toBe('bumped');
   expect(r.files).toContain('.github/workflows/ci.yml');
 });
 
 test('kit sync: never on main, never with the flag, never without a pin', () => {
   const main = appRepo('github:huishouden/pwa-kit#v0.94.0', 'v0.94.0', 'main');
-  expect(kitSync(repoAt(main.root), { log }, { latest: () => 'v0.98.0', install: fakeInstall })).toMatchObject({ status: 'skipped' });
+  expect(kitSync(repoAt(main.root), { log }, { latest: () => 'v0.98.0', install: fakeInstall, tagSha })).toMatchObject({ status: 'skipped' });
   expect(git(main.root, 'log', '--format=%s', '-1')).toBe('feat: app');
 });
 
 test('kit sync: --no-bump-kit and a repo without a kit pin are skipped', () => {
   const { root } = appRepo();
-  expect(kitSync(repoAt(root), { skip: true, log }, { latest: () => 'v0.98.0', install: fakeInstall })).toMatchObject({ status: 'skipped', reason: '--no-bump-kit' });
+  expect(kitSync(repoAt(root), { skip: true, log }, { latest: () => 'v0.98.0', install: fakeInstall, tagSha })).toMatchObject({ status: 'skipped', reason: '--no-bump-kit' });
   writeFileSync(join(root, 'package.json'), '{"name":"x"}\n');
   git(root, 'commit', '-qam', 'chore: x');
-  expect(kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', install: fakeInstall })).toMatchObject({ status: 'skipped', reason: 'no pwa-kit pin' });
+  expect(kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', install: fakeInstall, tagSha })).toMatchObject({ status: 'skipped', reason: 'no pwa-kit pin' });
 });
 
 test('kit sync: uncommitted package.json is left alone; a failed install reverts', () => {
   const { root } = appRepo();
   writeFileSync(join(root, 'package.json'), readFileSync(join(root, 'package.json'), 'utf8') + ' ');
-  expect(kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall })).toMatchObject({ status: 'failed' });
+  expect(kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha })).toMatchObject({ status: 'failed' });
   git(root, 'checkout', '--', 'package.json');
-  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: () => false });
+  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: () => false, tagSha });
   expect(r).toMatchObject({ status: 'failed', reason: 'bun install failed' });
   expect(git(root, 'status', '--porcelain')).toBe('');
   expect(kitPin(readFileSync(join(root, 'package.json'), 'utf8'))?.tag).toBe('v0.94.0');
@@ -268,20 +286,20 @@ function readyRoutes(head: string, opts: { draft?: boolean } = {}) {
 }
 
 test('ready: needs no version bump or CHANGELOG; marks the draft ready when review and evidence are for the head', async () => {
-  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', `${SHA} # v0.98.0`);
   writeFileSync(join(root, 'code.ts'), 'export {};\n');
   git(root, 'add', '.');
   git(root, 'commit', '-q', '-m', 'feat: code');
   const head = git(root, 'rev-parse', 'HEAD');
   const calls = fakeGh(readyRoutes(head));
-  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall } });
+  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha } });
   expect(r.ok).toBe(true);
   expect((r.data as { checks: { name: string }[] }).checks.map((c) => c.name)).toEqual(['review', 'evidence']);
   expect(calls().some((c) => c.startsWith('pr ready 3'))).toBe(true);
 });
 
-const TAG = (t: string) => (t === 'v0.98.0' ? 'abc1234' + '0'.repeat(33) : undefined);
-const BEHIND = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall };
+const TAG = (t: string) => (t === 'v0.98.0' ? SHA : undefined);
+const BEHIND = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha };
 
 /** Review and evidence recorded for `sha`; after a redo they are recorded for whatever the checkout's HEAD is. */
 function redoing(root: string, reran: string[]) {
@@ -342,7 +360,7 @@ test('ready: --dry-run and --no-bump-kit leave the branch alone', async () => {
   const { root } = appRepo();
   const head = git(root, 'rev-parse', 'HEAD');
   fakeGh(readyRoutes(head));
-  const kit = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall };
+  const kit = { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha };
   const r = await readyFlow(ctxFor(root, { 'dry-run': true }), { kit });
   expect(r.ok).toBe(true);
   expect((r.data as { action: string }).action).toBe('ready (dry run)');
@@ -351,9 +369,9 @@ test('ready: --dry-run and --no-bump-kit leave the branch alone', async () => {
 });
 
 test('ready: stale evidence for the head still blocks', async () => {
-  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', `${SHA} # v0.98.0`);
   const head = git(root, 'rev-parse', 'HEAD');
-  fakeGh(withRoute(readyRoutes(head), 'hh-evidence', JSON.stringify([{ login: 'piekstra', body: marker('f'.repeat(40)), html_url: 'u', updated_at: '1' }]) + '\n'));
+  fakeGh(withRoute(readyRoutes(head), 'hh-evidence', JSON.stringify([{ login: 'piekstra', body: marker('e'.repeat(40)), html_url: 'u', updated_at: '1' }]) + '\n'));
   const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
   expect(r.ok).toBe(false);
   expect(existsSync(join(root, 'CHANGELOG.md'))).toBe(false);
@@ -365,7 +383,7 @@ test('ready: a kit commit that could not be pushed stops before any waiting or r
   const head = git(root, 'rev-parse', 'HEAD');
   const calls = fakeGh(readyRoutes(head));
   let reran = 0;
-  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall }, review: async () => (reran++, { ok: true, data: {} }), evidence: async () => (reran++, { ok: true, data: {} }) });
+  const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha }, review: async () => (reran++, { ok: true, data: {} }), evidence: async () => (reran++, { ok: true, data: {} }) });
   expect(r.ok).toBe(false);
   expect((r.data as { error: string }).error).toBe('kit commit not pushed');
   expect(reran).toBe(0);
@@ -383,7 +401,7 @@ test('ready and review share one reviewer default (HH_REVIEWER)', () => {
 
 test('kit sync: a latest tag that is not an exact vX.Y.Z is never written anywhere', () => {
   const { root } = appRepo();
-  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0"\nx', hasTarball: () => false, install: fakeInstall });
+  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0"\nx', hasTarball: () => false, install: fakeInstall, tagSha });
   expect(r.status).toBe('skipped');
   expect(git(root, 'status', '--porcelain')).toBe('');
 });
@@ -433,7 +451,10 @@ test('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock ch
     ['foreign owner', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'github:someone/pwa-kit#v0.98.0'))],
     ['other host tarball', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'https://evil.example/download/v0.98.0/x.tgz'))],
     ['downgrade', (r) => pkg(r, (t) => t.replace(/#v0\.98\.0/, '#v0.90.0'))],
-    ['branch ref', (r) => wf(r, (t) => t.replace('pwa.yml@v0.98.0', 'pwa.yml@main'))],
+    ['branch ref', (r) => wf(r, (t) => t.replace(/pwa\.yml@.*/, 'pwa.yml@main'))],
+    ['commit pin of another commit', (r) => wf(r, (t) => t.replace(SHA, 'e'.repeat(40)))],
+    ['commit pin without its version comment', (r) => wf(r, (t) => t.replace(' # v0.98.0', ''))],
+    ['commit pin going back', (r) => wf(r, (t) => t.replace('# v0.98.0', '# v0.90.0'))],
     ['lock beyond kit', (r) => (writeFileSync(join(r, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234').replace('zod@4.0.0', 'zod@4.0.1')), commitAll(r))],
     ['lock kit from elsewhere', (r) => (writeFileSync(join(r, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234').replace('github:huishouden/pwa-kit#abc1234', 'github:evil/pwa-kit#abc1234')), commitAll(r))],
   ];
@@ -469,7 +490,7 @@ test('review candidates: reviewer reviews and trusted markers, without the head,
 });
 
 test('ready: a failing review of the head is not replaced by an earlier clean marker', async () => {
-  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', `${SHA} # v0.98.0`);
   const old = git(root, 'rev-parse', 'HEAD');
   writeFileSync(join(root, 'bun.lock'), readFileSync(join(root, 'bun.lock'), 'utf8') + '# touched\n');
   git(root, 'commit', '-qam', 'chore: lock');
@@ -484,7 +505,7 @@ test('ready: a failing review of the head is not replaced by an earlier clean ma
 });
 
 test('ready: an evidence comment from anyone but the PR author or the reviewer is ignored', async () => {
-  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', 'v0.98.0');
+  const { root } = appRepo('github:huishouden/pwa-kit#v0.98.0', `${SHA} # v0.98.0`);
   const head = git(root, 'rev-parse', 'HEAD');
   fakeGh(withRoute(readyRoutes(head), 'hh-evidence', JSON.stringify([{ login: 'mallory', body: marker(head), html_url: 'u', updated_at: '1' }]) + '\n'));
   const r = await readyFlow(ctxFor(root), { kit: { latest: () => 'v0.98.0', hasTarball: () => false } });
@@ -502,7 +523,7 @@ test('candidates are ordered by history, not by where the review was found', () 
   // A marker for the older X and a reviewer review of the newer Y: Y comes first however they were found.
   expect(newestFirst(root, Z, [X, Y])).toEqual([Y, X]);
   expect(newestFirst(root, Z, [Y, X])).toEqual([Y, X]);
-  expect(newestFirst(root, Z, ['f'.repeat(40), X])).toEqual([X]);
+  expect(newestFirst(root, Z, ['e'.repeat(40), X])).toEqual([X]);
 });
 
 test('carry: the lock must resolve the kit to the release package.json pins', () => {

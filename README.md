@@ -56,15 +56,18 @@ to `package.json`, `bun.lock` or the workflows.
 `hh dev ready` accepts a review or evidence of an earlier commit (an ancestor) when the diff since
 it touches only the kit: `package.json` changed only in its `@huishouden/pwa-kit` pin (to
 huishouden/pwa-kit's release at an equal or later exact tag), `.github/workflows/*.y(a)ml` changed
-only in their `huishouden/pwa-kit/.github/workflows/*@vX.Y.Z` refs (exact tags, none going back),
+only in their `huishouden/pwa-kit/{.github/workflows,actions}/…` refs (exact tags, or `@<sha> # vX.Y.Z` commit pins whose commit is that tag's; none going back),
 and `bun.lock` changed only on the kit's own two lines, resolving to that same release (its tarball URL, or the commit its tag points to). Any other file or change refuses, and review
 and evidence are redone. An earlier review is used only when nothing reviewed the head itself (a
 failing review of the head is never replaced), and evidence comments count only from the PR author
 or the reviewer.
 
 `hh dev bump-kit` moves `@huishouden/pwa-kit` (to the latest release's tarball URL when the release
-has one, else its git tag) and the `huishouden/pwa-kit/.github/workflows/*.yml@vX.Y.Z` workflow
-references to the latest exact tag together and runs lint and tests.
+has one, else its git tag) to the latest exact tag and pins the `huishouden/pwa-kit/…` workflow and
+action references to that tag's commit, `uses: huishouden/pwa-kit/<path>@<40-hex sha> # vX.Y.Z`
+(tags are movable; the commit is not). The sha is the tag's peeled commit from `git ls-remote`. A
+commit pin whose comment already names the target is current, a pin ahead of the latest release is
+kept, and a pin is never turned back into a tag. Then it runs lint and tests.
 
 ## Signing in
 
