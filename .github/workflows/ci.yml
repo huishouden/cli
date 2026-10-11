@@ -21,8 +21,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: huishouden/pwa-kit/actions/leak-scan@2f1645b81d932ed5cb38f8d31a9fa0ce4f4c71b2 # v0.110.0
-      - uses: huishouden/pwa-kit/actions/license-check@2f1645b81d932ed5cb38f8d31a9fa0ce4f4c71b2 # v0.110.0
+      - uses: huishouden/pwa-kit/actions/leak-scan@0a672e6345eaf1fe60f250964743a03ec183d866 # v0.111.0
+      - uses: huishouden/pwa-kit/actions/license-check@0a672e6345eaf1fe60f250964743a03ec183d866 # v0.111.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
       - run: bun run lint
