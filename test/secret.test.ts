@@ -128,6 +128,9 @@ describe('secret push', () => {
     const soft = await pushSecret('cloudflare', { soft: true }, empty.deps);
     expect(soft.ok).toBe(true);
     expect(empty.state.ghSet).toEqual([]);
+    const app = await pushSecret('cloudflare', { repos: ['pet'], expected: true }, m.deps);
+    expect(app.ok).toBe(true);
+    expect(m.state.ghSet).toHaveLength(1); // nothing went to pet
     expect((await pushSecret('cloudflare', { repos: ['a/b'] }, empty.deps)).ok).toBe(false);
   });
 });

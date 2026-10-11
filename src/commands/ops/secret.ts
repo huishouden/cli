@@ -68,9 +68,14 @@ export interface PushOutcome extends Target {
   message?: string;
 }
 
-export async function pushSecret(name: string, opts: { repos?: string[]; env?: string; soft?: boolean }, deps: Deps = realDeps()): Promise<Result> {
+export async function pushSecret(name: string, opts: { repos?: string[]; env?: string; soft?: boolean; expected?: boolean }, deps: Deps = realDeps()): Promise<Result> {
   const spec = specFor(name);
   if ('error' in spec) return fail({ name }, spec.error);
+  if (opts.expected && opts.repos) {
+    const repos = opts.repos.filter((r) => spec.targets.some((t) => t.repo === r));
+    if (!repos.length) return { ok: true, data: { name, pushed: [], skipped: 'not an expected target' }, text: `${name} does not belong on ${opts.repos.join(', ')}: skipped.` };
+    opts = { ...opts, repos };
+  }
   if (!opts.repos && !spec.targets.length) return fail({ name }, `${name} has no default targets: name them with --repos a,b`);
   for (const r of opts.repos ?? []) if (!/^[A-Za-z0-9._-]{1,100}$/.test(r)) return fail({ name }, `not a repository name: ${r}`);
   if (opts.env !== undefined && !/^[A-Za-z0-9._-]{1,100}$/.test(opts.env)) return fail({ name }, `not an environment name: ${opts.env}`);
@@ -198,12 +203,13 @@ register({
   group: 'ops',
   name: 'secret push',
   summary: 'Set a stored secret (and its companions) as GitHub secrets on the repos that need it',
-  usage: 'hh ops secret push <name> [--repos a,b,c] [--env production] [--soft] [--json]',
-  details: 'Reads the keychain, then gh secret set with the value on stdin. Without --repos: the name\'s defaults (cloudflare: environment production of portal, connector, notify, calendar; also CLOUDFLARE_ACCOUNT_ID). A repo in the defaults uses its default environment unless --env is given. A missing environment is created, deployable from main only. --soft: skip quietly when the keychain has no value (bootstrap).',
+  usage: 'hh ops secret push <name> [--repos a,b,c] [--env production] [--soft] [--expected] [--json]',
+  details:
+    `Reads the keychain, then gh secret set with the value on stdin. Without --repos: the name's defaults (cloudflare: environment production of portal, connector, notify, calendar; also CLOUDFLARE_ACCOUNT_ID). A repo in the defaults uses its default environment unless --env is given. A missing environment is created, deployable from main only. --soft: skip quietly when the keychain has no value; --expected: drop repos the name does not belong on (both for the kit's bootstrap).`,
   valued: ['repos', 'env'],
   async run(ctx) {
     if (ctx.args.length !== 1) return fail({}, 'usage: hh ops secret push <name> [--repos a,b,c] [--env production]');
-    return pushSecret(ctx.args[0], { repos: reposFlag(ctx), env: flagString(ctx.flags, 'env'), soft: ctx.flags.soft === true });
+    return pushSecret(ctx.args[0], { repos: reposFlag(ctx), env: flagString(ctx.flags, 'env'), soft: ctx.flags.soft === true, expected: ctx.flags.expected === true });
   },
 });
 
