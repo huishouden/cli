@@ -173,7 +173,7 @@ test('kit sync: current, ahead, floating refs, main, --no-bump-kit and no pin', 
 
 test('kit sync: a tag whose commit cannot be resolved is not pinned; nothing is left changed', () => {
   const { root } = appRepo();
-  const r = kitSync(repoAt(root), { log }, { ...BEHIND, tagSha: () => { throw new Error('offline'); } });
+  const r = kitSync(repoAt(root), { log }, { ...BEHIND, tagSha: () => undefined });
   expect(r).toMatchObject({ status: 'failed', reason: 'kit tag commit unknown' });
   expect(git(root, 'status', '--porcelain')).toBe('');
 });
