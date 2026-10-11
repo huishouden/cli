@@ -108,6 +108,7 @@ not marked as the assistant's: they look as if you made them in the app.
 | `bills due` | Open bills (admins and members) |
 | `pet today [pet]`, `pet feeding <pet>`, `pet dose <pet> <medicine>`, `pet outing <pet> --pooped`, `pet routines [pet]`, `pet routine-done <routine>` | The feeding board, reminders, courses, outings (bathroom breaks, walks) and care routines (`pet routines` lists them, `pet routine-done` marks one done); logging |
 | `home upkeep`, `home event <title>` | Upkeep due; a regular event or a visit |
+| `baby settings`, `baby contraction-note <note>`, `baby kicks [--target 10] [--remind-at 19:00\|off]` | Baby's settings: the instructions from the provider on the contraction timer (`""` clears them) and the kick counter's target and daily reminder; changing them is for admins and members |
 | `appointment add <app> <title> <start>` | An appointment for a pet, the baby, a car or a person |
 | `contacts search <query>`, `contacts add <name>` | The household's contacts |
 | `health people`, `health medicines <person>`, `health history <person>`, `health due [person]` | Health, for the people you care for |

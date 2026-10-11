@@ -171,6 +171,20 @@ describe('hh data, as the person, under the rules', () => {
     expect((await hh(SAM, 'data', 'health', 'appointments', 'Nan', '--json')).json.text).toContain('Checkup');
   });
 
+  test("baby: an admin saves the provider's instructions and a kick reminder time; a helper reads them and changes nothing", async () => {
+    const note = 'Call L&D when contractions are 5 minutes apart for an hour';
+    const set = await hh(SAM, 'data', 'baby', 'contraction-note', note, '--json');
+    expect(set.code).toBe(0);
+    expect(await read('households/h1/babyContractionSettings/main')).toMatchObject({ note, updatedBy: SAM });
+    expect((await hh(SAM, 'data', 'baby', 'kicks', '--target', '12', '--remind-at', '19:00', '--json')).code).toBe(0);
+    expect(await read('households/h1/babyKickSettings/main')).toMatchObject({ target: 12, remindAt: '19:00', updatedBy: SAM });
+    const seen = await hh(ALEX, 'data', 'baby', 'settings', '--json');
+    expect(seen.json).toMatchObject({ ok: true, data: { contraction_note: note, kick_target: 12, kick_remind_at: '19:00' } });
+    expect((await hh(ALEX, 'data', 'baby', 'contraction-note', 'Something else')).code).toBe(1);
+    expect((await hh(KIM, 'data', 'baby', 'settings')).code).toBe(1);
+    expect(await read('households/h1/babyContractionSettings/main')).toMatchObject({ note });
+  });
+
   test('bad arguments are refused before anything is read', async () => {
     const r = await hh(SAM, 'data', 'groceries', 'add', 'Milk', '--urgency', 'soon');
     expect(r.code).toBe(1);
