@@ -1,8 +1,13 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { configFile } from '../src/lib/config';
 import { pushSecret, rotateSecret, storeSecret, whereSecrets, type Deps } from '../src/commands/ops/secret';
 import { clipboardReadCommand } from '../src/lib/clipboard';
 import { ensureMainOnlyEnvironment, listEnvironments, placements } from '../src/lib/github-secrets';
-import { cloudflareAccountId, findSecret, resolveTargets, specFor, type ConfigFile } from '../src/lib/secrets';
+import type { ConfigFile } from '../src/lib/config';
+import { cloudflareAccountId, findSecret, resolveTargets, specFor } from '../src/lib/secrets';
 import type { ShResult } from '../src/lib/sh';
 import '../src/commands/ops';
 
@@ -250,6 +255,27 @@ describe('Cloudflare account id', () => {
   });
 });
 
+describe('config file', () => {
+  test('a hand-edited file that is not JSON is never overwritten', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hh-config-'));
+    writeFileSync(join(dir, 'config.json'), '{ not json');
+    const c = configFile(dir);
+    expect(() => c.write({ a: 1 })).toThrow('not valid JSON');
+    expect(readFileSync(join(dir, 'config.json'), 'utf8')).toBe('{ not json');
+    rmSync(dir, { recursive: true });
+    expect(configFile(join(dir, 'new')).read()).toEqual({});
+  });
+  test('written 0600 in a 0700 directory, keeping other keys', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'hh-config-')), 'hh');
+    const c = configFile(dir);
+    c.write({ a: 1 });
+    c.write({ b: 2 });
+    expect(c.read()).toEqual({ a: 1, b: 2 });
+    expect(statSync(c.path).mode & 0o777).toBe(0o600);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+});
+
 describe('environments', () => {
   test('a half-made environment (exists, no main policy) is repaired; a failed policy is an error', () => {
     const calls: string[] = [];
@@ -270,5 +296,11 @@ describe('environments', () => {
     const arun = async (cmd: string[]) => (cmd[1] === 'repo' ? ok('portal\n') : cmd[1] === 'api' ? { code: 1, stdout: '', stderr: 'HTTP 403' } : ok('[]'));
     expect(await listEnvironments('portal', arun)).toBeNull();
     expect((await placements(new Set(['X']), arun)).unreadable).toEqual([{ repo: 'portal', env: '*' }]);
+    const { deps } = machine();
+    deps.arun = arun;
+    const w = await whereSecrets(deps);
+    const d = w.data as { missing: { repo: string }[] };
+    expect(d.missing.map((m) => m.repo)).not.toContain('portal');
+    expect(w.text).toContain('UNREADABLE huishouden/portal (environments)');
   });
 });

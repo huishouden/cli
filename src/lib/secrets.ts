@@ -2,9 +2,8 @@
 // value is recognised, and where GitHub should hold it. A secret travels clipboard -> keychain ->
 // `gh secret set` stdin, inside this process: it is never in argv, never printed, and never read
 // by an agent (the keychain read is hh's own, at push time).
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { configDir, keychainStore, libsecretStore, type CredentialStore, type Runner } from './credentials';
+import type { ConfigFile } from './config';
+import { keychainStore, libsecretStore, type CredentialStore, type Runner } from './credentials';
 import { ORG, type Target } from './github-secrets';
 import { sh } from './sh';
 
@@ -14,34 +13,6 @@ export { ORG, type Target };
 export const KEYCHAIN_ACCOUNT = 'huishouden';
 
 export type Fetcher = (url: string, init?: { headers?: Record<string, string> }) => Promise<{ status: number; json(): Promise<unknown> }>;
-
-/** The hh config file (non-secret settings such as the Cloudflare account id), behind an interface so tests need no disk. */
-export interface ConfigFile {
-  read(): Record<string, unknown>;
-  write(patch: Record<string, unknown>): void;
-  readonly path: string;
-}
-
-export function configFile(dir: string = configDir()): ConfigFile {
-  const path = join(dir, 'config.json');
-  const read = () => {
-    try {
-      return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>) : {};
-    } catch {
-      return {};
-    }
-  };
-  return {
-    path,
-    read,
-    write(patch) {
-      mkdirSync(dir, { recursive: true, mode: 0o700 });
-      chmodSync(dir, 0o700);
-      writeFileSync(path, `${JSON.stringify({ ...read(), ...patch }, null, 2)}\n`, { mode: 0o600 });
-      chmodSync(path, 0o600);
-    },
-  };
-}
 
 export interface CompanionContext {
   fetcher: Fetcher;
@@ -84,9 +55,9 @@ const CLOUDFLARE_TOKEN = /^cfut_[A-Za-z0-9_-]{35,}$/;
 export async function cloudflareAccountId(value: string, ctx: CompanionContext): Promise<string | null> {
   const fromEnv = ctx.env.HH_CLOUDFLARE_ACCOUNT_ID?.trim();
   if (fromEnv) return fromEnv;
-  const saved = ctx.config.read().cloudflareAccountId;
-  if (typeof saved === 'string' && saved) return saved;
   try {
+    const saved = ctx.config.read().cloudflareAccountId;
+    if (typeof saved === 'string' && saved) return saved;
     const res = await ctx.fetcher('https://api.cloudflare.com/client/v4/accounts', { headers: { Authorization: `Bearer ${value}` } });
     const body = (await res.json()) as { result?: { id?: string }[] };
     const ids = (body.result ?? []).map((a) => a.id).filter((id): id is string => !!id);
@@ -147,7 +118,7 @@ export function specFor(name: string): SecretSpec | { error: string } {
   return { name, service: `huishouden-${name}`, ghName: name.toUpperCase().replace(/-/g, '_'), rollHint: "the provider's key page", validate: (v) => nonEmpty(v) ?? noBreaks(v), targets: [] };
 }
 
-export const describeTarget = (t: Target) => `${ORG}/${t.repo}${t.env ? ` (environment ${t.env})` : ''}`;
+export const describeTarget = (t: Target) => `${ORG}/${t.repo}${t.env === '*' ? ' (environments)' : t.env ? ` (environment ${t.env})` : ''}`;
 
 /** The destinations for a push: --repos with an --env, or each repo's default environment, else the repo level. */
 export function resolveTargets(spec: SecretSpec, repos: string[] | undefined, env: string | undefined): { targets: Target[]; unexpected: Target[] } {

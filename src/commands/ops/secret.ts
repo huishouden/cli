@@ -7,7 +7,8 @@ import { clearClipboard, readClipboard } from '../../lib/clipboard';
 import { configDir } from '../../lib/credentials';
 import { ensureMainOnlyEnvironment, listSecrets, ORG, placements, setSecret, validEnv, validRepo, type RunAsync, type Target } from '../../lib/github-secrets';
 import { sh, shAsync, type ShResult, type ShOptions } from '../../lib/sh';
-import { configFile, describeTarget, keychainFor, KEYCHAIN_ACCOUNT, resolveTargets, SECRETS, specFor, type ConfigFile, type Fetcher, type SecretSpec } from '../../lib/secrets';
+import { configFile, type ConfigFile } from '../../lib/config';
+import { describeTarget, keychainFor, KEYCHAIN_ACCOUNT, resolveTargets, SECRETS, specFor, type Fetcher, type SecretSpec } from '../../lib/secrets';
 
 /** Everything with a side effect, so tests can stand in for the keychain, the clipboard, gh and the network. */
 export interface Deps {
@@ -132,7 +133,12 @@ export async function whereSecrets(deps: Deps = realDeps()): Promise<Result> {
     .sort((a, b) => a.secret.localeCompare(b.secret) || a.repo.localeCompare(b.repo) || (a.env ?? '').localeCompare(b.env ?? ''));
   const missing: (Target & { secret: string })[] = [];
   for (const [ghName, { spec }] of watched)
-    for (const t of spec.targets) if (!rows.some((r) => r.secret === ghName && r.repo === t.repo && r.env === t.env)) missing.push({ ...t, secret: ghName });
+    for (const t of spec.targets) {
+      if (rows.some((r) => r.secret === ghName && r.repo === t.repo && r.env === t.env)) continue;
+      // A place gh could not read is unknown, not missing.
+      if (unreadable.some((u) => u.repo === t.repo && (u.env === t.env || u.env === '*'))) continue;
+      missing.push({ ...t, secret: ghName });
+    }
   const unexpected = rows.filter((r) => !r.expected);
   const text = [
     ...rows.map((r) => `${r.expected ? 'ok        ' : 'UNEXPECTED'} ${r.secret.padEnd(24)} ${describeTarget(r).padEnd(52)} ${r.updatedAt}`),
