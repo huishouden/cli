@@ -2,34 +2,9 @@
 // stdin only (a pipe, or typed with echo off), never from argv (where `ps` and shell history would
 // keep it) and never printed. Wraps `gh secret set`, which reads the value from its own stdin.
 import { register } from '../../registry';
-import { sh, type ShResult } from '../../lib/sh';
+import { checkSecret, ORG, setSecret, type SecretRequest } from '../../lib/github-secrets';
 
-const ORG = 'huishouden';
-
-export interface SecretRequest {
-  repo: string;
-  name: string;
-  value: string;
-  env?: string;
-}
-
-/** What is wrong with the request, if anything; the value itself is never in a message. */
-export function checkSecret(req: SecretRequest, extraArgs: string[]): string | null {
-  if (extraArgs.length) return 'the value comes from stdin only: hh ops secret set <repo> <name> < file, or type it when asked';
-  if (!/^[A-Za-z0-9._-]{1,100}$/.test(req.repo)) return `not a repository name: ${req.repo}`;
-  if (!/^[A-Z_][A-Z0-9_]{0,99}$/i.test(req.name) || /^GITHUB_/i.test(req.name)) return `not a secret name GitHub accepts: ${req.name}`;
-  if (!req.value) return 'the value is empty';
-  if (req.env !== undefined && !/^[A-Za-z0-9._-]{1,100}$/.test(req.env)) return `not an environment name: ${req.env}`;
-  return null;
-}
-
-export function setSecret(req: SecretRequest, run: (cmd: string[], input: string) => ShResult = (cmd, input) => sh(cmd, { input })): { ok: boolean; message: string } {
-  const cmd = ['gh', 'secret', 'set', req.name, '-R', `${ORG}/${req.repo}`, ...(req.env ? ['--env', req.env] : [])];
-  const r = run(cmd, req.value);
-  // gh's own messages never contain the value; still, only its first line is passed on.
-  const message = (r.code === 0 ? r.stdout || r.stderr : r.stderr || r.stdout).trim().split('\n')[0] ?? '';
-  return { ok: r.code === 0, message };
-}
+export { checkSecret, setSecret, type SecretRequest };
 
 /** The value: all of stdin from a pipe (one trailing newline dropped), or one line typed with echo off. */
 async function readValue(): Promise<string> {
