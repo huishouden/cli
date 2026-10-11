@@ -2,6 +2,7 @@
 import './auth-domains';
 import './oauth-check';
 import './secret-set';
+import './secret';
 import './monitoring';
 import './roles';
 import './profile-check';
