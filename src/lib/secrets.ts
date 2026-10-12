@@ -135,6 +135,16 @@ export const SECRETS: SecretSpec[] = [
     targets: [{ repo: 'portal' }],
     localConsumers: [nrqConsumer(NEW_RELIC_ACCOUNT_ID)],
   },
+  {
+    name: 'alert-email',
+    service: 'huishouden-alert-email',
+    ghName: 'ALERT_EMAIL',
+    rollHint: "not a credential: copy the alert recipient's email address, then run `hh ops secret store alert-email` and `hh ops secret push alert-email`",
+    retireHint: 'Nothing to revoke: the address is not a credential. The next monitoring run on the portal sends alerts to the new recipient.',
+    validate: (v) => noBreaks(v) ?? (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) ? null : 'not a single email address'),
+    // The monitoring workflow (monitoring.yml) has no environment: it passes the address to the kit's infra/newrelic.ts, which makes it the recipient of the New Relic alerts. Without it the run is skipped.
+    targets: [{ repo: 'portal' }],
+  },
 ];
 
 export function findSecret(name: string): SecretSpec | undefined {
