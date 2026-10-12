@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# A stand-in gcloud for the read-alert.sh tests: a fake token, and nothing enabled anywhere.
+[[ "$1 $2" == "auth print-access-token" ]] && { echo fake-token; exit 0; }
+exit 0

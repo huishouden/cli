@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# A stand-in curl for the read-alert.sh tests: answers the Monitoring API's reads from the files in
+# $FAKE_MONITORING, and records every write (POST, PATCH) in $FAKE_MONITORING/writes instead of making it.
+method=GET url="" filter=""
+while (($#)); do
+  case "$1" in
+    -X) method=$2; shift ;;
+    -H|-d) shift ;;
+    --data-urlencode) filter=$2; shift ;;
+    http*) url=$1 ;;
+  esac
+  shift
+done
+if [[ "$method" != GET ]]; then
+  echo "$method $url" >> "$FAKE_MONITORING/writes"
+  echo '{"name":"projects/p/alertPolicies/new"}'
+  exit 0
+fi
+case "$url" in
+  */notificationChannels) echo '{"notificationChannels":[{"name":"projects/p/notificationChannels/1"}]}' ;;
+  */alertPolicies)
+    if [[ "$filter" == *"60% of the free quota"* ]]; then f=$FAKE_MONITORING/daily.json; else f=$FAKE_MONITORING/hourly.json; fi
+    if [[ -s "$f" ]]; then jq -c '{alertPolicies: [.]}' "$f"; else echo '{}'; fi ;;
+  *) echo '{}' ;;
+esac

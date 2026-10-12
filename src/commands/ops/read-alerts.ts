@@ -1,11 +1,12 @@
 // hh ops read-alerts: the Cloud Monitoring alert policies on Firestore reads (pwa-kit STANDARD.md
 // "Read budgets"): an email at 5,000 billed reads in an hour and at 30,000 in 24 hours, on the
 // "Huishouden budget alerts" channel. The policies are code, the kit's infra/read-alert.sh, run here
-// from the kit's latest release with your gcloud login; `--print` shows them without changing
-// anything. Monitoring configuration only: no household data is read.
+// from the kit's latest release with your gcloud login; it writes only a policy that differs from the
+// live one and says which it created or updated, or "unchanged". `--print` shows them without
+// changing anything. Monitoring configuration only: no household data is read.
 import { flagString, register } from '../../registry';
 import { trustedKit } from '../../lib/staging';
-import { sh, stream } from '../../lib/sh';
+import { sh } from '../../lib/sh';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { PROJECTS } from '../../lib/suite';
@@ -21,6 +22,44 @@ export function readAlertArgs(flags: Record<string, string | boolean | undefined
     return v;
   };
   return [...(flags.print ? ['--print'] : []), project, n('daily', 30000), n('hourly', 5000)];
+}
+
+export type PolicyChange = 'created' | 'updated' | 'unchanged';
+
+export interface ReadAlertOutcome {
+  /** Each alert policy the script reported, by its label, and what it did to it. */
+  policies: { policy: string; change: PolicyChange }[];
+  /** The email channel's line, as the script said it (created, updated, unchanged, existing used). */
+  channel?: string;
+}
+
+/**
+ * What read-alert.sh changed, from its output: one line per policy, "created the alert: <label>",
+ * "alert updated: <label>" or "unchanged: <label>" (kit v0.118.2 on, which writes only a policy
+ * that differs from the live one). Kits before wrote every policy and said "alert up to date": that
+ * was a write, so it reads as updated.
+ */
+export function parseReadAlertOutput(out: string): ReadAlertOutcome {
+  const outcome: ReadAlertOutcome = { policies: [] };
+  for (const raw of out.split('\n')) {
+    const line = raw.trim();
+    let m: RegExpMatchArray | null;
+    if ((m = line.match(/^created the alert: (.+)$/))) outcome.policies.push({ policy: m[1]!, change: 'created' });
+    else if ((m = line.match(/^alert (?:updated|up to date): (.+)$/))) outcome.policies.push({ policy: m[1]!, change: 'updated' });
+    else if ((m = line.match(/^unchanged: (.+)$/))) outcome.policies.push({ policy: m[1]!, change: 'unchanged' });
+    else if (/email channel|using the existing email channel/.test(line)) outcome.channel = line;
+  }
+  return outcome;
+}
+
+/** One line for the person: "unchanged", or which policy was created or updated. */
+export function readAlertSummary(project: string, o: ReadAlertOutcome): string {
+  if (!o.policies.length) return `read-alert.sh finished on ${project} but reported no policy; check its output above.`;
+  const changed = o.policies.filter((p) => p.change !== 'unchanged');
+  if (!changed.length) return `Read alerts on ${project}: unchanged (${o.policies.length} policies already as wanted; nothing written).`;
+  const lines = changed.map((p) => `  ${p.change}: ${p.policy}`);
+  const same = o.policies.length - changed.length;
+  return [`Read alerts on ${project}: ${changed.length} changed${same ? `, ${same} unchanged` : ''}.`, ...lines].join('\n');
 }
 
 register({
@@ -45,7 +84,11 @@ register({
       }
       return { ok: true, data: { policies }, text: r.stdout.trim() };
     }
-    const code = await stream(['bash', script, ...args], { json: ctx.json });
-    return { ok: code === 0, data: { project: args[0], daily: Number(args[1]), hourly: Number(args[2]), exit: code }, text: code === 0 ? `Read alerts applied on ${args[0]}: ${args[2]} billed reads in an hour, ${args[1]} in 24 hours.` : `read-alert.sh exited ${code}.` };
+    const r = sh(['bash', script, ...args]);
+    if (r.stderr.trim()) ctx.log(r.stderr.trim());
+    const outcome = parseReadAlertOutput(r.stdout);
+    const data = { project: args[0], daily: Number(args[1]), hourly: Number(args[2]), exit: r.code, ...outcome };
+    if (r.code !== 0) return { ok: false, data, text: [r.stdout.trim(), `read-alert.sh exited ${r.code}.`].filter(Boolean).join('\n') };
+    return { ok: outcome.policies.length > 0, data, text: [outcome.channel, readAlertSummary(args[0]!, outcome)].filter(Boolean).join('\n') };
   },
 });
