@@ -130,6 +130,12 @@ interface Opts {
   ciConclusion?: string;
   /** Answer this mutation ("METHOD path") with this result instead. */
   failOn?: Record<string, ShResult>;
+  /** Reads of the new repository's lists that still miss the last write: releases (omits the last), secrets (omits all), refs (omits tags), assets (omits a release's assets). Infinity: never catches up. */
+  lag?: { releases?: number; secrets?: number; refs?: number; assets?: number };
+  /** The release v1.0.0 carries this many .tgz assets. */
+  assets?: number;
+  /** gh release upload silently drops this asset. */
+  dropUpload?: string;
 }
 
 /** The fake world: GitHub's API, its git remotes, curl and gh release upload. Every call is recorded. */
@@ -143,6 +149,9 @@ function world(opts: Opts = {}) {
   let nextId = 5000;
   const calls: { cmd: string[]; input?: string }[] = [];
   const pushes: { name: string; repo: string; env?: string }[] = [];
+  const sleeps: number[] = [];
+  const lag = { releases: opts.lag?.releases ?? 0, secrets: opts.lag?.secrets ?? 0, refs: opts.lag?.refs ?? 0, assets: opts.lag?.assets ?? 0 };
+  const lagging = (key: keyof typeof lag, r: FakeRepo) => r.json.id !== SOURCE_ID && lag[key] > 0 && (lag[key]--, true);
 
   repos.set('app', {
     json: newRepoJson(SOURCE_ID, 'app', { description: 'The app', homepage: 'https://example.com/app/', has_wiki: false, allow_merge_commit: false, allow_rebase_merge: false, delete_branch_on_merge: true, stargazers_count: 3, security_and_analysis: { secret_scanning: { status: 'enabled' }, secret_scanning_push_protection: { status: 'enabled' } } }),
@@ -161,7 +170,7 @@ function world(opts: Opts = {}) {
     secrets: opts.repoSecrets ?? ['NEW_RELIC_API_KEY'],
     variables: [{ name: 'REGION', value: 'eu' }],
     releases: [
-      { id: 1, tag_name: 'v1.0.0', name: 'v1.0.0', body: 'First.', draft: false, prerelease: false, created_at: '2026-01-01T00:00:00Z', target_commitish: 'main', assets: [{ id: 11, name: 'app-1.0.0.tgz', size: 42, content_type: 'application/gzip', browser_download_url: 'https://github.com/huishouden/app/releases/download/v1.0.0/app-1.0.0.tgz' }] },
+      { id: 1, tag_name: 'v1.0.0', name: 'v1.0.0', body: 'First.', draft: false, prerelease: false, created_at: '2026-01-01T00:00:00Z', target_commitish: 'main', assets: Array.from({ length: opts.assets ?? 1 }, (_, i) => { const name = i ? `app-1.0.0-${i}.tgz` : 'app-1.0.0.tgz'; return { id: 11 + i, name, size: 42, content_type: 'application/gzip', browser_download_url: `https://github.com/huishouden/app/releases/download/v1.0.0/${name}` }; }) },
     ],
     perms: { enabled: true, allowed_actions: 'all' },
     workflow: { default_workflow_permissions: 'read', can_approve_pull_request_reviews: false },
@@ -198,7 +207,7 @@ function world(opts: Opts = {}) {
       if (rest === 'pulls') return ok(list(page, []));
       if (rest === 'actions/permissions') return ok(r.perms);
       if (rest === 'actions/permissions/workflow') return ok(r.workflow);
-      if (rest === 'actions/secrets') return ok({ secrets: list(page, r.secrets.map((n) => ({ name: n }))) });
+      if (rest === 'actions/secrets') return ok({ secrets: list(page, lagging('secrets', r) ? [] : r.secrets.map((n) => ({ name: n }))) });
       if (rest === 'actions/variables') return ok({ variables: list(page, r.variables) });
       if (rest === 'environments') return ok({ environments: list(page, [...r.envs.values()].map((e) => e.json)) });
       if (env) {
@@ -209,7 +218,11 @@ function world(opts: Opts = {}) {
         if (env[2] === 'secrets') return ok({ secrets: list(page, e.secrets.map((n) => ({ name: n }))) });
         if (env[2] === 'variables') return ok({ variables: list(page, e.variables) });
       }
-      if (rest === 'releases') return ok(list(page, r.releases));
+      if (rest === 'releases') return ok(list(page, lagging('releases', r) ? r.releases.slice(0, -1) : r.releases));
+      if (/^releases\/\d+$/.test(rest)) {
+        const rel = r.releases.find((x) => String(x.id) === rest.slice(9));
+        return rel ? ok(lagging('assets', r) ? { ...rel, assets: [] } : rel) : notFound();
+      }
       if (rest === 'releases/latest') return r.releases.length ? ok(r.releases.find((x) => x.latest !== false && !x.draft) ?? r.releases.at(-1)) : notFound();
       if (rest.startsWith('releases/tags/')) return ok(r.releases.find((x) => x.tag_name === decodeURIComponent(rest.slice(14))) ?? notFound());
       if (rest === 'branches/main/protection') return notFound();
@@ -239,6 +252,7 @@ function world(opts: Opts = {}) {
     if (method === 'PUT' && rest === 'actions/permissions') return (r.perms = body), ok();
     if (method === 'PUT' && rest === 'actions/permissions/workflow') return (r.workflow = body), ok();
     if (method === 'POST' && rest === 'actions/variables') return r.variables.push(body), ok();
+    if (method === 'PATCH' && rest.startsWith('actions/variables/')) return Object.assign(r.variables.find((v) => v.name === decodeURIComponent(rest.slice(18)))!, body), ok();
     if (env && method === 'PUT' && !env[2]) {
       const rules = [...(body.wait_timer ? [{ type: 'wait_timer', wait_timer: body.wait_timer }] : []), ...(body.deployment_branch_policy ? [{ type: 'branch_policy' }] : [])];
       r.envs.set(decodeURIComponent(env[1]!), { json: { name: decodeURIComponent(env[1]!), protection_rules: rules, deployment_branch_policy: body.deployment_branch_policy, can_admins_bypass: body.can_admins_bypass }, policies: [], secrets: [], variables: [] });
@@ -246,6 +260,10 @@ function world(opts: Opts = {}) {
     }
     if (env && method === 'POST' && env[2] === 'deployment-branch-policies') return r.envs.get(decodeURIComponent(env[1]!))!.policies.push(body), ok();
     if (env && method === 'POST' && env[2] === 'variables') return r.envs.get(decodeURIComponent(env[1]!))!.variables.push(body), ok();
+    if (method === 'PATCH' && /^releases\/\d+$/.test(rest)) {
+      const rel = r.releases.find((x) => String(x.id) === rest.slice(9));
+      return rel ? (Object.assign(rel, body), ok(rel)) : notFound();
+    }
     if (method === 'POST' && rest === 'releases') {
       if (r.releases.some((x) => x.tag_name === body.tag_name)) return unprocessable('Validation Failed', [{ resource: 'Release', code: 'already_exists', field: 'tag_name' }]);
       if (body.make_latest === 'true') for (const x of r.releases) x.latest = false;
@@ -258,6 +276,11 @@ function world(opts: Opts = {}) {
 
   const run = (cmd: string[], o?: ShOptions): ShResult => {
     calls.push({ cmd, input: o?.input });
+    if (cmd[0] === 'git' && cmd[1] === 'ls-remote' && cmd.length === 3 && cmd[2]!.endsWith('/app.git') && lag.refs > 0) {
+      lag.refs--;
+      const r = sh(cmd, o);
+      return { ...r, stdout: r.stdout.split('\n').filter((l) => !l.includes('refs/tags/')).join('\n') };
+    }
     if (cmd[0] === 'git') return sh(cmd, o);
     if (cmd[0] === 'curl') {
       const file = cmd[cmd.indexOf('-o') + 1]!;
@@ -271,7 +294,7 @@ function world(opts: Opts = {}) {
     if (cmd[0] === 'gh' && cmd[1] === 'release' && cmd[2] === 'upload') {
       const r = repos.get(cmd[cmd.indexOf('-R') + 1]!.split('/')[1]!)!;
       const rel = r.releases.find((x) => x.tag_name === cmd[3])!;
-      for (const f of cmd.slice(4, cmd.indexOf('-R'))) rel.assets.push({ name: f.split('/').at(-1), size: statSync(f).size });
+      for (const f of cmd.slice(4, cmd.indexOf('-R'))) if (!f.endsWith(`/${opts.dropUpload}`)) (rel.assets = rel.assets.filter((x: any) => x.name !== f.split('/').at(-1)), rel.assets.push({ name: f.split('/').at(-1), size: statSync(f).size }));
       return ok();
     }
     return { code: 127, stdout: '', stderr: `unmocked ${cmd.join(' ')}` };
@@ -294,11 +317,11 @@ function world(opts: Opts = {}) {
     root: join(tmp, `inventories-${seq}`),
     now: () => new Date('2026-10-12T09:00:00Z'),
     say: (l) => void said.push(l),
-    sleep: async () => {},
+    sleep: async (ms) => void sleeps.push(ms),
   };
   /** The calls that change GitHub. */
   const mutations = () => calls.filter((c) => (c.cmd[0] === 'gh' && c.cmd[1] === 'api' && c.cmd.includes('-X') && c.cmd[c.cmd.indexOf('-X') + 1] !== 'GET') || (c.cmd[0] === 'gh' && c.cmd[1] === 'release') || (c.cmd[0] === 'git' && c.cmd[1] === 'push'));
-  return { deps, repos, redirects, calls, pushes, said, remotes, src, mutations };
+  return { deps, repos, redirects, calls, pushes, said, remotes, src, mutations, sleeps, lag };
 }
 
 const run = (w: ReturnType<typeof world>, apply = false, archive = 'app-archive') => repoRecreate('app', archive, { apply, watch: false }, w.deps);
@@ -590,6 +613,248 @@ describe('hh ops repo-recreate: apply', () => {
     const r = await apply(pre.inventory!, w.deps);
     expect(r.ok).toBe(true);
     expect(w.repos.get('app')!.releases.map((x) => x.body)).toEqual(['First.']);
+  });
+});
+
+describe('hh ops repo-recreate: read-back after a write waits for GitHub\'s lists', () => {
+  const BACKOFF = [2000, 4000, 8000, 16000];
+
+  test('a release list that lags one read, then catches up, passes after one wait', async () => {
+    const w = world({ lag: { releases: 1 } });
+    const r = await run(w, true);
+    expect(r.ok).toBe(true);
+    expect(w.sleeps).toEqual([2000]);
+    expect(w.lag.releases).toBe(0);
+  });
+
+  test('a release list that never catches up fails after 2, 4, 8 and 16 seconds, naming the missing tag', async () => {
+    const w = world({ lag: { releases: Infinity } });
+    const r = await run(w, true);
+    expect(r.ok).toBe(false);
+    const failed = (r.data as any).steps.find((s: any) => !s.ok);
+    expect(failed.step).toBe(7);
+    expect(failed.detail).toContain('0 release(s) on GitHub, 1 recorded');
+    expect(failed.detail).toContain('missing: v1.0.0');
+    expect(failed.detail).toContain('30s');
+    expect(w.sleeps).toEqual(BACKOFF);
+  });
+
+  test('a mismatch that is not lag (a differing body) is named, after the same waits', async () => {
+    const w = world();
+    const real = w.deps.run;
+    w.deps.run = (cmd, o) => {
+      const r = real(cmd, o);
+      if (w.repos.get('app') && w.repos.get('app')!.json.id !== SOURCE_ID && cmd.join(' ').includes('repos/huishouden/app/releases?per_page') && r.code === 0) return ok(JSON.parse(r.stdout).map((x: any) => ({ ...x, body: 'edited' })));
+      return r;
+    };
+    const r = await run(w, true);
+    expect(r.ok).toBe(false);
+    expect((r.data as any).steps.find((s: any) => !s.ok).detail).toContain('release v1.0.0 differs in name, body');
+    expect(w.sleeps).toEqual(BACKOFF);
+  });
+
+  test('a secret list that lags passes; tag refs that lag pass; both wait once', async () => {
+    const w = world({ lag: { secrets: 1, refs: 1 } });
+    const r = await run(w, true);
+    expect(r.ok).toBe(true);
+    expect(w.sleeps).toEqual([2000, 2000]);
+  });
+
+  test('secrets that never show up fail step 4 naming the secret', async () => {
+    const w = world({ lag: { secrets: Infinity } });
+    const r = await run(w, true);
+    const failed = (r.data as any).steps.find((s: any) => !s.ok);
+    expect(failed.step).toBe(4);
+    expect(failed.detail).toContain('secrets missing at repos/huishouden/app/actions/secrets: NEW_RELIC_API_KEY');
+    expect(w.sleeps).toEqual(BACKOFF);
+  });
+
+  test('tags that never show up on the remote fail step 6 naming the tag', async () => {
+    const w = world({ lag: { refs: Infinity } });
+    const r = await run(w, true);
+    const failed = (r.data as any).steps.find((s: any) => !s.ok);
+    expect(failed.step).toBe(6);
+    expect(failed.detail).toContain('refs/tags/v1.0.0');
+  });
+});
+
+describe('hh ops repo-recreate: release assets', () => {
+  test('uploads are sequential, one file per gh call, each verified before the next; names and sizes are identical', async () => {
+    const w = world({ assets: 3 });
+    const r = await run(w, true);
+    expect(r.ok).toBe(true);
+    const uploads = w.calls.filter((c) => c.cmd[0] === 'gh' && c.cmd[1] === 'release' && c.cmd[2] === 'upload');
+    expect(uploads.map((c) => c.cmd.slice(4, c.cmd.indexOf('-R')).map((f) => f.split('/').at(-1)))).toEqual([['app-1.0.0.tgz'], ['app-1.0.0-1.tgz'], ['app-1.0.0-2.tgz']]);
+    // After every upload and before the next, the release is read back.
+    const seq = w.calls.map((c, i) => [i, c] as const).filter(([, c]) => (c.cmd[1] === 'release' && c.cmd[2] === 'upload') || (c.cmd[1] === 'api' && /releases\/\d+$/.test(c.cmd[4]!)));
+    expect(seq.map(([, c]) => (c.cmd[1] === 'release' ? 'upload' : 'verify'))).toEqual(['upload', 'verify', 'upload', 'verify', 'upload', 'verify']);
+    expect(w.repos.get('app')!.releases[0]!.assets.map((a: any) => `${a.name}:${a.size}`)).toEqual(['app-1.0.0.tgz:42', 'app-1.0.0-1.tgz:42', 'app-1.0.0-2.tgz:42']);
+  });
+
+  test('an upload that lags one read passes; one GitHub dropped fails naming the asset', async () => {
+    const lagged = world({ assets: 2, lag: { assets: 1 } });
+    expect((await run(lagged, true)).ok).toBe(true);
+    expect(lagged.sleeps).toEqual([2000]);
+    const dropped = world({ assets: 2, dropUpload: 'app-1.0.0-1.tgz' });
+    const r = await run(dropped, true);
+    const failed = (r.data as any).steps.find((s: any) => !s.ok);
+    expect(failed.step).toBe(7);
+    expect(failed.detail).toContain('asset app-1.0.0-1.tgz of release v1.0.0 is not on GitHub');
+  });
+
+  test('a name gh would change (a # starts a label) is refused before any upload', async () => {
+    const w = world();
+    const pre = await preflight('app', 'app-archive', w.deps);
+    pre.inventory!.releases[0]!.assets[0]!.name = 'a#b.tgz';
+    pre.inventory!.releases[0]!.assets[0]!.file = pre.inventory!.releases[0]!.assets[0]!.file.replace('app-1.0.0.tgz', 'a#b.tgz');
+    const r = await apply(pre.inventory!, w.deps);
+    expect(r.ok).toBe(false);
+    expect(r.steps.find((s) => !s.ok)!.detail).toContain('would upload as a different name');
+    expect(w.calls.some((c) => c.cmd[2] === 'upload')).toBe(false);
+  });
+});
+
+describe('hh ops repo-recreate: --from-step', () => {
+  const state = (dir: string) => JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+  const resume = (w: ReturnType<typeof world>, n: number, extra: { apply?: boolean; backup?: string } = {}, archive = 'app-archive') => repoRecreate('app', archive, { apply: extra.apply ?? true, watch: false, fromStep: n, ...(extra.backup ? { backup: extra.backup } : {}) }, w.deps);
+
+  async function failedAtSeven() {
+    const w = world({ lag: { releases: Infinity } });
+    const first = await run(w, true);
+    expect(first.ok).toBe(false);
+    return { w, dir: (first.data as any).inventoryDir as string, newId: (first.data as any).newId as number };
+  }
+
+  test('state.json is saved after every step: ids, completed steps, the failed step', async () => {
+    const { dir, newId } = await failedAtSeven();
+    const st = state(dir);
+    expect(st).toMatchObject({ version: 1, repo: 'app', archiveName: 'app-archive', archiveId: SOURCE_ID, newId, completed: 6 });
+    expect(st.steps.map((x: any) => [x.step, x.ok])).toEqual([1, 2, 3, 4, 5, 6, 7].map((n) => [n, n < 7]));
+    expect(statSync(join(dir, 'state.json')).mode & 0o777).toBe(0o600);
+  });
+
+  test('--from-step 7 finishes a step 7 failure without undoing or touching steps 1 to 6', async () => {
+    const { w, dir, newId } = await failedAtSeven();
+    w.lag.releases = 0;
+    const before = w.calls.length;
+    const r = await resume(w, 7);
+    expect(r.ok).toBe(true);
+    const d = r.data as any;
+    expect(d.steps.map((s: any) => [s.step, s.ok])).toEqual([1, 2, 3, 4, 5, 6, 7, 8].map((n) => [n, true]));
+    expect(d.newId).toBe(newId);
+    const muts = w.calls.slice(before).filter((c) => c.cmd[1] === 'api' && c.cmd.includes('-X') && c.cmd[c.cmd.indexOf('-X') + 1] !== 'GET').map((c) => `${c.cmd[c.cmd.indexOf('-X') + 1]} ${c.cmd[c.cmd.indexOf('-X') + 2]}`);
+    // The release is already there from the failed run: adopted by PATCH. Nothing of steps 1 to 6 is repeated.
+    expect(muts).toEqual(['POST repos/huishouden/app/releases', 'PATCH repos/huishouden/app/releases/5001']);
+    expect(w.calls.slice(before).some((c) => c.cmd[0] === 'git' && c.cmd[1] === 'clone')).toBe(false);
+    expect(w.repos.get('app')!.json.id).toBe(newId);
+    expect(w.repos.get('app')!.releases.map((x) => x.tag_name)).toEqual(['v1.0.0']);
+    expect(w.repos.get('app-archive')!.json).toMatchObject({ id: SOURCE_ID, private: true });
+    expect(state(dir).completed).toBe(8);
+  });
+
+  test('without --apply it only verifies and shows what would run', async () => {
+    const { w } = await failedAtSeven();
+    const before = w.calls.length;
+    const r = await resume(w, 7, { apply: false });
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain('7. Recreate');
+    expect(r.text).not.toContain('6. Push');
+    expect(w.calls.length).toBe(before);
+  });
+
+  test('a step 3 failure after the create resumes with --from-step 3: the repository is finished in place, not created twice', async () => {
+    const w = world();
+    const real = w.deps.run;
+    let drift = true;
+    w.deps.run = (cmd, o) => {
+      const r = real(cmd, o);
+      if (drift && cmd[4] === 'repos/huishouden/app' && cmd[3] === 'GET' && w.repos.get('app') && w.repos.get('app')!.json.id !== SOURCE_ID && r.code === 0) return ok({ ...JSON.parse(r.stdout), description: 'drifted' });
+      return r;
+    };
+    const first = await run(w, true);
+    const failed = (first.data as any).steps.find((s: any) => !s.ok);
+    expect(failed.step).toBe(3);
+    expect(failed.detail).toContain('settings differ');
+    const dir = (first.data as any).inventoryDir as string;
+    expect(state(dir)).toMatchObject({ completed: 2, newId: (first.data as any).newId });
+    drift = false;
+    w.sleeps.length = 0;
+    const before = w.calls.length;
+    const r = await resume(w, 3);
+    expect(r.ok).toBe(true);
+    expect((r.data as any).steps.map((s: any) => [s.step, s.ok])).toEqual([1, 2, 3, 4, 5, 6, 7, 8].map((n) => [n, true]));
+    expect(w.calls.slice(before).some((c) => c.cmd.includes('orgs/huishouden/repos'))).toBe(false);
+    expect([...w.repos.keys()].sort()).toEqual(['app', 'app-archive']);
+  });
+
+  test('a resumed step that fails again lowers completed, so a later --from-step cannot skip it', async () => {
+    const { w, dir } = await failedAtSeven();
+    w.lag.releases = 0;
+    w.lag.secrets = Infinity;
+    const again = await resume(w, 4);
+    expect(again.ok).toBe(false);
+    expect((again.data as any).steps.find((s: any) => !s.ok).step).toBe(4);
+    expect(state(dir).completed).toBe(3);
+    w.lag.secrets = 0;
+    const skip = await resume(w, 7);
+    expect(skip.ok).toBe(false);
+    expect((skip.data as any).error).toContain('only steps 1 to 3 are recorded as done');
+    // Step 4 is safe to run again (variables updated, policies not doubled), and then the rest follows.
+    const fin = await resume(w, 4);
+    expect(fin.ok).toBe(true);
+    expect(w.repos.get('app')!.variables).toEqual([{ name: 'REGION', value: 'eu' }]);
+  });
+
+  test('the dry resume lists steps by number, from the step on', async () => {
+    const { w } = await failedAtSeven();
+    const r = await resume(w, 7, { apply: false });
+    expect((r.data as any).plan.map((l: string) => l.slice(0, 2))).toEqual(['7.', '8.']);
+  });
+
+  test('refuses when there is no state file, naming it', async () => {
+    const w = world();
+    const r = await resume(w, 7, { backup: join(tmp, 'nowhere') });
+    expect(r.ok).toBe(false);
+    expect((r.data as any).error).toContain('state.json does not exist');
+    expect(w.mutations()).toEqual([]);
+    const none = await resume(world(), 7);
+    expect(none.ok).toBe(false);
+    expect((none.data as any).error).toContain('no earlier run');
+  });
+
+  test('refuses a state file that names another repository or archive, or whose steps are not done', async () => {
+    const { w, dir } = await failedAtSeven();
+    w.lag.releases = 0;
+    const other = await resume(w, 7, {}, 'other-archive');
+    expect(other.ok).toBe(false);
+    expect(other.text).toContain('Nothing on GitHub was changed');
+    const st = state(dir);
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({ ...st, completed: 3 }));
+    const early = await resume(w, 7);
+    expect((early.data as any).error).toContain('only steps 1 to 3 are recorded as done');
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({ ...st, completed: 0 }));
+    expect(((await resume(w, 2)).data as any).error).toContain('records no completed step 1');
+    for (const n of [1, 9, 0]) expect(((await resume(w, n)).data as any).error).toContain('--from-step must be a step from 2 to 8');
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(st));
+  });
+
+  test('refuses when the recorded ids no longer match GitHub, touching nothing', async () => {
+    const { w, dir } = await failedAtSeven();
+    w.lag.releases = 0;
+    const st = state(dir);
+    const before = w.calls.length;
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({ ...st, newId: st.newId + 1 }));
+    const wrongNew = await resume(w, 7);
+    expect(wrongNew.ok).toBe(false);
+    expect((wrongNew.data as any).steps[0].detail).toContain(`the new repository's recorded id is ${st.newId + 1}`);
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({ ...st, archiveId: 4242 }));
+    expect(((await resume(w, 7)).data as any).error).toContain('records archive id 4242');
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(st));
+    w.repos.get('app-archive')!.json = { ...w.repos.get('app-archive')!.json, id: 31337 };
+    const wrongOld = await resume(w, 7);
+    expect(wrongOld.ok).toBe(false);
+    expect((wrongOld.data as any).steps[0].detail).toContain(`the archive's recorded id is ${SOURCE_ID}`);
+    expect(w.calls.slice(before).filter((c) => c.cmd.includes('-X') && c.cmd[c.cmd.indexOf('-X') + 1] !== 'GET')).toEqual([]);
   });
 });
 
