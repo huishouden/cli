@@ -1,4 +1,5 @@
-// The checks behind `hh dev verify` (local) and `hh dev evidence` (local or staging).
+// The checks behind `hh dev verify` (local) and `hh dev evidence` (local or staging): an app's on its
+// staging site, a Worker's on its `[env.staging]` (`runWorkerStaging`).
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { compare } from './semver';
 import { join } from 'node:path';
@@ -8,7 +9,7 @@ import { has, sh, shOk, stream } from './sh';
 import { Steps } from './steps';
 import { useJava } from './java';
 import { sweepStaging } from './staging';
-import { guardedEnv } from './envguard';
+import { guardedEnv, ProductionEnvRefused } from './envguard';
 
 export const STAGING_PROJECT = 'huishouden-staging';
 // One firebase-tools for every emulator run and deploy hh makes: 15.32.1+ (14.x's Firestore emulator
@@ -16,10 +17,23 @@ export const STAGING_PROJECT = 'huishouden-staging';
 // older one beside it, which would replace the shared cached emulator jars under ~/.cache/firebase.
 export const FIREBASE_TOOLS = 'firebase-tools@15.32.1';
 
+/** The repo's Actions variables (public values), or a thrown error with gh's own words. */
+export function repoVariables(repo: Pick<Repo, 'slug'>): { name: string; value: string }[] {
+  const r = sh(['gh', 'variable', 'list', '-R', repo.slug, '--json', 'name,value']);
+  if (r.code !== 0) throw new Error(`gh variable list -R ${repo.slug}: ${r.stderr.trim().slice(0, 300) || `exit ${r.code}`}`);
+  return JSON.parse(r.stdout) as { name: string; value: string }[];
+}
+
 /** The repo's STAGING_* variables as the build's VITE_* (public values; the staging project only). */
 export function stagingEnv(repo: Repo): { env: Record<string, string>; site?: string; productionApiKey?: string } {
-  const r = sh(['gh', 'variable', 'list', '-R', repo.slug, '--json', 'name,value']);
-  const vars = r.code === 0 ? (JSON.parse(r.stdout) as { name: string; value: string }[]) : [];
+  // A local run (screenshots) goes on without them when gh can't answer; a staging run then stops on
+  // the missing STAGING_SITE.
+  let vars: { name: string; value: string }[] = [];
+  try {
+    vars = repoVariables(repo);
+  } catch {
+    vars = [];
+  }
   const env: Record<string, string> = {};
   for (const { name, value } of vars) if (name.startsWith('STAGING_VITE_')) env[name.slice('STAGING_'.length)] = value;
   if (env.VITE_FIREBASE_PROJECT_ID && env.VITE_FIREBASE_PROJECT_ID !== STAGING_PROJECT)
@@ -234,11 +248,23 @@ export function workerStaging(toml: string): { declared: boolean; project?: stri
   return { declared, ...(project ? { project } : {}) };
 }
 
-/** The staging Worker's address: the repo's `STAGING_WORKER_URL` variable (public). */
+/** The staging Worker's address: the repo's `STAGING_WORKER_URL` variable (public). Throws when gh can't say. */
 export function workerStagingUrl(repo: Pick<Repo, 'slug'>): string | undefined {
-  const r = sh(['gh', 'variable', 'list', '-R', repo.slug, '--json', 'name,value']);
-  const vars = r.code === 0 ? (JSON.parse(r.stdout) as { name: string; value: string }[]) : [];
-  return vars.find((v) => v.name === 'STAGING_WORKER_URL')?.value;
+  return repoVariables(repo).find((v) => v.name === 'STAGING_WORKER_URL')?.value;
+}
+
+/**
+ * Where a Worker's staging evidence may deploy, decided before anything runs: wrangler.toml has an
+ * `[env.staging]` whose vars name huishouden-staging (a missing project is unverified: refused; another
+ * project is production's: `ProductionEnvRefused`), and STAGING_WORKER_URL names a staging Worker over
+ * https. Returns the URL.
+ */
+export function workerStagingTarget(toml: string, url: string | undefined, slug: string): string {
+  const staging = workerStaging(toml);
+  if (!staging.declared) throw new Error(`${slug}'s wrangler.toml has no [env.staging]: a Worker's staging evidence deploys there`);
+  if (!staging.project) throw new Error(`${slug}'s [env.staging.vars] names no FIREBASE_PROJECT_ID: refusing to deploy a staging Worker that can't be shown to use ${STAGING_PROJECT}`);
+  if (staging.project !== STAGING_PROJECT) throw new ProductionEnvRefused([{ source: 'wrangler.toml [env.staging.vars]', keys: ['FIREBASE_PROJECT_ID'] }], 'staging');
+  return checkWorkerStagingUrl(url, slug);
 }
 
 /** Refuses a staging address that could be production's: https, and the Worker's name says staging. */
@@ -263,10 +289,8 @@ export function checkWorkerStagingUrl(url: string | undefined, slug: string): st
  */
 export async function runWorkerStaging(repo: Repo, opts: RunOptions): Promise<RunResult> {
   const steps = new Steps(opts.log, opts.json);
-  const staging = workerStaging(readFileSync(join(repo.root, 'wrangler.toml'), 'utf8'));
-  if (!staging.declared) throw new Error(`${repo.slug}'s wrangler.toml has no [env.staging]: a Worker's staging evidence deploys there`);
-  if (staging.project && staging.project !== STAGING_PROJECT) throw new Error(`[env.staging.vars] FIREBASE_PROJECT_ID is ${staging.project}, not ${STAGING_PROJECT}`);
-  const url = checkWorkerStagingUrl(workerStagingUrl(repo), repo.slug);
+  // Every refusal before anything is installed, tested or deployed.
+  const url = workerStagingTarget(readFileSync(join(repo.root, 'wrangler.toml'), 'utf8'), workerStagingUrl(repo), repo.slug);
   await common(repo, steps, {});
   const deploy = hasScript(repo, 'deploy:staging') ? ['bun', 'run', 'deploy:staging'] : ['bunx', 'wrangler', 'deploy', '--env', 'staging'];
   await steps.cmd(`deploy the Worker's staging environment (${STAGING_PROJECT})`, deploy, { cwd: repo.root });

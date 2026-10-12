@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { checkWorkerStagingUrl, workerStaging } from '../src/lib/runs';
+import { checkWorkerStagingUrl, workerStaging, workerStagingTarget } from '../src/lib/runs';
+import { ProductionEnvRefused } from '../src/lib/envguard';
 import { readAlertArgs } from '../src/commands/ops/read-alerts';
 
 describe("a Worker's staging evidence", () => {
@@ -15,6 +16,21 @@ describe("a Worker's staging evidence", () => {
     expect(() => checkWorkerStagingUrl(undefined, 'huishouden/calendar')).toThrow('has no STAGING_WORKER_URL variable');
     expect(() => checkWorkerStagingUrl('https://huishouden-calendar.example.workers.dev', 'huishouden/calendar')).toThrow('does not name a staging Worker');
     expect(() => checkWorkerStagingUrl('http://huishouden-calendar-staging.example.workers.dev', 'huishouden/calendar')).toThrow('not an https address');
+  });
+});
+
+describe('where a Worker may deploy for staging evidence, decided before anything runs', () => {
+  const URL_OK = 'https://huishouden-calendar-staging.example.workers.dev';
+  const staging = (vars: string) => `name = "x"\n[vars]\nFIREBASE_PROJECT_ID = "huishouden-piekstra"\n\n[env.staging]\nname = "x-staging"\n${vars}`;
+  test('the staging project and a staging address: go', () => {
+    expect(workerStagingTarget(staging('[env.staging.vars]\nFIREBASE_PROJECT_ID = "huishouden-staging"\n'), URL_OK, 'huishouden/x')).toBe(URL_OK);
+  });
+  test('no [env.staging], no project named, production named, or a bad address: refused', () => {
+    expect(() => workerStagingTarget('name = "x"\n', URL_OK, 'huishouden/x')).toThrow('has no [env.staging]');
+    expect(() => workerStagingTarget(staging(''), URL_OK, 'huishouden/x')).toThrow('names no FIREBASE_PROJECT_ID');
+    expect(() => workerStagingTarget(staging('[env.staging.vars]\nFIREBASE_PROJECT_ID = "huishouden-piekstra"\n'), URL_OK, 'huishouden/x')).toThrow(ProductionEnvRefused);
+    expect(() => workerStagingTarget(staging('[env.staging.vars]\nFIREBASE_PROJECT_ID = "huishouden-staging"\n'), undefined, 'huishouden/x')).toThrow('has no STAGING_WORKER_URL');
+    expect(() => workerStagingTarget(staging('[env.staging.vars]\nFIREBASE_PROJECT_ID = "huishouden-staging"\n'), 'https://x.example.workers.dev', 'huishouden/x')).toThrow('does not name a staging Worker');
   });
 });
 

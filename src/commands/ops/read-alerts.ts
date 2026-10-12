@@ -37,7 +37,12 @@ register({
     if (ctx.flags.print) {
       const r = sh(['bash', script, ...args]);
       if (r.code !== 0) return { ok: false, data: { error: r.stderr.trim() }, text: r.stderr.trim() };
-      const policies = JSON.parse(r.stdout) as unknown[];
+      let policies: unknown[];
+      try {
+        policies = JSON.parse(r.stdout) as unknown[];
+      } catch {
+        return { ok: false, data: { error: 'read-alert.sh --print did not print JSON' }, text: r.stdout.slice(0, 400) };
+      }
       return { ok: true, data: { policies }, text: r.stdout.trim() };
     }
     const code = await stream(['bash', script, ...args], { json: ctx.json });
