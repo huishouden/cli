@@ -33,13 +33,14 @@ function machine(init: { clipboard?: string; keychain?: string; keychainService?
     keychain: init.keychain as string | undefined,
     /** Keychain items outside hh's own (service/account), e.g. nrq's. */
     items: new Map<string, string>(),
-    calls: [] as (Call & { discard?: boolean })[],
+    calls: [] as (Call & { discardStdout?: boolean })[],
     ghSet: [] as { name: string; repo: string; env?: string; input: string }[],
     envs: new Set<string>(),
     nrq: init.nrq ?? 'missing',
     nrqConfig: init.nrqConfig ?? true,
     nrqKey: undefined as string | undefined,
     nrqAccount: init.nrqAccount,
+    keyringLocked: false,
   };
   const nrqRun = (a: string[], input?: string): ShResult => {
     const modern = state.nrq === 'modern';
@@ -60,8 +61,8 @@ function machine(init: { clipboard?: string; keychain?: string; keychainService?
     if (a[0] === 'config' && (a[1] === 'set' || a[1] === 'set-account-id')) return (state.nrqAccount = a[a.length - 1]), ok();
     return { code: 1, stdout: '', stderr: `unmocked nrq ${a.join(' ')}` };
   };
-  const run = (cmd: string[], opts?: { input?: string; discard?: boolean }): ShResult => {
-    state.calls.push({ cmd, input: opts?.input, discard: opts?.discard });
+  const run = (cmd: string[], opts?: { input?: string; discardStdout?: boolean }): ShResult => {
+    state.calls.push({ cmd, input: opts?.input, discardStdout: opts?.discardStdout });
     const [prog, ...a] = cmd;
     if (prog === 'pbpaste' || prog === 'xclip' && a.includes('-o')) return ok(`${state.clipboard}\n`);
     if (prog === 'pbcopy' || prog === 'xclip') return (state.clipboard = opts?.input ?? ''), ok();
@@ -78,11 +79,16 @@ function machine(init: { clipboard?: string; keychain?: string; keychainService?
       const ours = service.startsWith('huishouden-') && (!init.keychainService || init.keychainService === service);
       const value = ours ? state.keychain : service.startsWith('huishouden-') ? undefined : state.items.get(`${service}/${account}`);
       if (value === undefined) return { code: 44, stdout: '', stderr: 'not found' };
-      return ok(a.includes('-w') ? `${value}\n` : 'keychain: "/login.keychain-db"\nattributes: ...\n');
+      return ok(a.includes('-w') ? `${value}\n` : opts?.discardStdout ? '' : 'keychain: "/login.keychain-db"\nattributes: ...\n');
     }
     if (prog === 'secret-tool' && a[0] === 'store') return (state.keychain = opts?.input), ok();
-    if (prog === 'secret-tool' && a[0] === 'lookup') return state.keychain === undefined ? { code: 1, stdout: '', stderr: '' } : ok(state.keychain);
-    if (prog === 'nrq') return state.nrq === 'missing' ? { code: 127, stdout: '', stderr: 'nrq: not found' } : nrqRun(a, opts?.input);
+    if (prog === 'secret-tool' && a[0] === 'lookup') {
+      if (state.keyringLocked) return { code: 1, stdout: '', stderr: 'secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY' };
+      return state.keychain === undefined ? { code: 1, stdout: '', stderr: '' } : ok(opts?.discardStdout ? '' : state.keychain);
+    }
+    // Like Bun.spawnSync: a program that is not installed throws, it does not exit 127.
+    if (prog === 'nrq' && state.nrq === 'missing') throw new Error('Executable not found in $PATH: "nrq"');
+    if (prog === 'nrq') return nrqRun(a, opts?.input);
     if (prog === 'gh' && a[0] === 'secret' && a[1] === 'set') {
       state.ghSet.push({ name: a[2], repo: a[a.indexOf('-R') + 1], env: a.includes('--env') ? a[a.indexOf('--env') + 1] : undefined, input: opts?.input ?? '' });
       return ok();
@@ -100,6 +106,7 @@ function machine(init: { clipboard?: string; keychain?: string; keychainService?
   const config = memoryConfig();
   const deps: Deps = {
     run,
+    has: (program) => program !== 'nrq' || state.nrq !== 'missing',
     arun: async () => ({ code: 1, stdout: '', stderr: 'unmocked' }),
     fetcher: async (url, init) => {
       if (url === 'https://api.newrelic.com/graphql') {
@@ -277,7 +284,7 @@ describe('secret where', () => {
       'security find-generic-password -s huishouden-cloudflare-api-token -a huishouden',
       'security find-generic-password -s huishouden-newrelic-user-api-key -a huishouden',
     ]);
-    expect(looks.every((c) => c.discard === true)).toBe(true);
+    expect(looks.every((c) => c.discardStdout === true)).toBe(true);
     expect(JSON.stringify(r)).not.toContain(NR);
   });
 
@@ -304,12 +311,17 @@ describe('secret where', () => {
     expect(((await whereSecrets(m.deps)).data as { noKeychainCopy: string[] }).noKeychainCopy).toEqual(['CLOUDFLARE_API_TOKEN', 'NEW_RELIC_API_KEY', 'VAPID_PRIVATE_KEY']);
   });
 
-  test('Linux: existence by secret-tool lookup with the output discarded', async () => {
+  test('Linux: existence by secret-tool lookup with stdout discarded; a keyring that cannot be asked is KEYCHAIN UNKNOWN', async () => {
     const m = org(machine({ keychain: NR, os: 'linux' }));
     await whereSecrets(m.deps);
     const looks = m.state.calls.filter((c) => c.cmd[0] === 'secret-tool');
     expect(looks.length).toBe(2);
-    expect(looks.every((c) => c.cmd[1] === 'lookup' && c.discard === true)).toBe(true);
+    expect(looks.every((c) => c.cmd[1] === 'lookup' && c.discardStdout === true)).toBe(true);
+    const locked = org(machine({ keychain: NR, os: 'linux' }));
+    locked.state.keyringLocked = true;
+    const r = await whereSecrets(locked.deps);
+    expect(r.text).toMatch(/NEW_RELIC_API_KEY .* KEYCHAIN UNKNOWN$/m);
+    expect((r.data as { noKeychainCopy: string[] }).noKeychainCopy).toContain('NEW_RELIC_API_KEY');
   });
 });
 
@@ -392,14 +404,32 @@ describe('local consumers (nrq)', () => {
     expect((await syncLocal('cloudflare', machine({ keychain: CF }).deps)).text).toContain('no local consumers');
   });
 
-  test('an nrq error message never carries the key', async () => {
-    const m = machine({ keychain: NR, nrq: 'modern' });
+  test('an nrq error message never carries the key, even quoted, escaped or cut short', async () => {
+    for (const echo of [(v: string) => `bad key ${v}`, (v: string) => `bad key "${v}"`, (v: string) => `{"key":${JSON.stringify(v)}}`, (v: string) => `key ${v.slice(0, 12)}...`, (v: string) => `key ...${v.slice(-9)}`]) {
+      const m = machine({ keychain: NR, nrq: 'modern' });
+      const run = m.deps.run;
+      m.deps.run = (cmd, opts) => (cmd[1] === 'set-credential' && !cmd.includes('--help') ? { code: 1, stdout: '', stderr: echo(opts?.input ?? '') } : run(cmd, opts));
+      const r = await syncLocal('newrelic-user', m.deps);
+      expect(r.ok).toBe(false);
+      expect(r.text).toContain('[redacted]');
+      for (const piece of [NR, NR.slice(0, 12), NR.slice(-9)]) expect(JSON.stringify(r)).not.toContain(piece);
+    }
+  });
+
+  test('a configure or status that throws is reported, and rotate still finishes its report', async () => {
+    const m = machine({ clipboard: NR, keychain: NR_OLD, nrq: 'modern' });
+    m.deps.arun = async () => ok(JSON.stringify([{ name: 'NEW_RELIC_API_KEY', updatedAt: '2026-10-10T12:00:05Z' }]));
     const run = m.deps.run;
-    m.deps.run = (cmd, opts) => (cmd[1] === 'set-credential' && !cmd.includes('--help') ? { code: 1, stdout: '', stderr: `bad key ${opts?.input}` } : run(cmd, opts));
-    const r = await syncLocal('newrelic-user', m.deps);
+    m.deps.run = (cmd, opts) => {
+      if (cmd[0] === 'nrq' && !cmd.includes('--help')) throw new Error('nrq crashed');
+      return run(cmd, opts);
+    };
+    const r = await rotateSecret('newrelic-user', m.deps);
     expect(r.ok).toBe(false);
-    expect(r.text).toContain('[redacted]');
-    expect(JSON.stringify(r)).not.toContain(NR);
+    expect(r.text).toContain('FAILED  nrq: nrq crashed');
+    expect(r.text).toContain('NOT CONFIGURED nrq: nrq crashed');
+    expect(r.text).toContain('verified huishouden/portal');
+    expect(m.state.clipboard).toBe('');
   });
 });
 

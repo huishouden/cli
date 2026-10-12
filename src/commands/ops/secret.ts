@@ -7,14 +7,17 @@ import { flagString, register, type Ctx, type Result } from '../../registry';
 import { clearClipboard, readClipboard } from '../../lib/clipboard';
 import { configDir } from '../../lib/credentials';
 import { ensureMainOnlyEnvironment, listSecrets, ORG, placements, setSecret, validEnv, validRepo, type RunAsync, type Target } from '../../lib/github-secrets';
-import { sh, shAsync, type ShResult, type ShOptions } from '../../lib/sh';
+import { has, sh, shAsync, type ShResult, type ShOptions } from '../../lib/sh';
 import { configFile, type ConfigFile } from '../../lib/config';
-import { keychainItemExists, type ConsumerOutcome } from '../../lib/local-consumers';
+import type { ConsumerContext, ConsumerOutcome } from '../../lib/local-consumers';
+import { redact } from '../../lib/redact';
 import { describeTarget, keychainFor, KEYCHAIN_ACCOUNT, resolveTargets, SECRETS, specFor, type Fetcher, type SecretSpec } from '../../lib/secrets';
 
 /** Everything with a side effect, so tests can stand in for the keychain, the clipboard, gh and the network. */
 export interface Deps {
   run: (cmd: string[], opts?: ShOptions) => ShResult;
+  /** Whether a program is on PATH (running a missing one throws). */
+  has(program: string): boolean;
   arun: RunAsync;
   fetcher: Fetcher;
   os: string;
@@ -27,6 +30,7 @@ export interface Deps {
 
 export const realDeps = (): Deps => ({
   run: sh,
+  has,
   arun: shAsync,
   fetcher: (url, init) => fetch(url, init),
   os: platform(),
@@ -54,13 +58,26 @@ async function saveValue(spec: SecretSpec, value: string, deps: Deps): Promise<s
   return null;
 }
 
+const consumerCtx = (deps: Deps): ConsumerContext => ({ run: deps.run, os: deps.os, has: deps.has });
+
 /** Hands the value to each program on this machine that uses it. */
 function configureConsumers(spec: SecretSpec, value: string, deps: Deps): ConsumerOutcome[] {
   return (spec.localConsumers ?? []).map((c) => {
     try {
-      return c.configure(value, { run: deps.run, os: deps.os });
+      return c.configure(value, consumerCtx(deps));
     } catch (e) {
-      return { consumer: c.name, ok: false, message: (e as Error).message.split(value).join('[redacted]') };
+      return { consumer: c.name, ok: false, message: redact((e as Error).message, value) };
+    }
+  });
+}
+
+/** What each program reports, after configuring; a program that throws is reported, not fatal. */
+function consumerStatus(spec: SecretSpec, deps: Deps): ConsumerOutcome[] {
+  return (spec.localConsumers ?? []).map((c) => {
+    try {
+      return c.status(consumerCtx(deps));
+    } catch (e) {
+      return { consumer: c.name, ok: false, message: (e as Error).message };
     }
   });
 }
@@ -184,7 +201,7 @@ export async function whereSecrets(deps: Deps = realDeps(), opts: { strict?: boo
   const copies = new Map<string, KeychainCopy>();
   const copyOf = (spec: SecretSpec): KeychainCopy => {
     if (!copies.has(spec.service)) {
-      const there = keychainItemExists(spec.service, KEYCHAIN_ACCOUNT, deps.os, deps.run);
+      const there = keychain(spec, deps).exists(KEYCHAIN_ACCOUNT);
       copies.set(spec.service, there === null ? 'unknown' : there ? 'keychain' : 'missing');
     }
     return copies.get(spec.service)!;
@@ -254,9 +271,12 @@ export async function rotateSecret(name: string, deps: Deps = realDeps(), wait: 
   deps.say(`4. ${pushed.ok ? 'Pushed' : 'Push FAILED'} to ${spec.targets.map(describeTarget).join(', ')}.`);
   // Local programs get the value from the keychain, the one source, not from the clipboard.
   let stored: string | null = null;
+  let readError: string | null = null;
   try {
     stored = keychain(spec, deps).read(KEYCHAIN_ACCOUNT);
-  } catch {}
+  } catch (e) {
+    readError = (e as Error).message;
+  }
   const local = stored ? configureConsumers(spec, stored, deps) : [];
   if (local.length) deps.say(`5. Configured ${local.map((o) => o.consumer).join(', ')}.`);
   // Verify: each target lists the secret, updated since the rotation began; each local program
@@ -267,8 +287,8 @@ export async function rotateSecret(name: string, deps: Deps = realDeps(), wait: 
     const s = list?.find((x) => x.name === spec.ghName);
     checks.push({ target: describeTarget(t), fresh: !!s && Date.parse(s.updatedAt) >= started.getTime() - 60_000 });
   }
-  const localStatus = (spec.localConsumers ?? []).map((c) => c.status({ run: deps.run, os: deps.os }));
-  const provider = !stored ? 'the keychain has no value after the store' : spec.verify ? await spec.verify(stored, deps.fetcher) : null;
+  const localStatus = consumerStatus(spec, deps);
+  const provider = !stored ? `the keychain could not give the value back after the store: ${readError ?? 'it has none'}` : spec.verify ? await spec.verify(stored, deps.fetcher) : null;
   const verified = pushed.ok && checks.every((c) => c.fresh) && local.every((o) => o.ok) && localStatus.every((o) => o.ok) && !provider;
   const text = [
     `Stored ${name} in the keychain (service ${spec.service}). Clipboard ${cleared ? 'cleared' : 'could not be cleared: clear it yourself'}.`,

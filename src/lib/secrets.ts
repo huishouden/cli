@@ -3,9 +3,10 @@
 // `gh secret set` stdin, inside this process: it is never in argv, never printed, and never read
 // by an agent (the keychain read is hh's own, at push time).
 import type { ConfigFile } from './config';
-import { keychainStore, libsecretStore, type CredentialStore, type Runner } from './credentials';
+import { keychainStore, libsecretStore, type KeychainItemStore, type Runner } from './credentials';
 import { ORG, type Target } from './github-secrets';
 import { nrqConsumer, type LocalConsumer } from './local-consumers';
+import { redact } from './redact';
 import { sh } from './sh';
 
 export { ORG, type Target };
@@ -87,10 +88,11 @@ export async function verifyNewRelicUserKey(value: string, fetcher: Fetcher): Pr
     });
     const body = (await res.json()) as { data?: { actor?: { user?: { email?: string } } }; errors?: { message?: string }[] };
     if (res.status === 200 && body.data?.actor?.user?.email && !body.errors?.length) return null;
-    const why = body.errors?.[0]?.message?.split(value).join('[redacted]');
-    return `New Relic does not accept this key (HTTP ${res.status}${why ? `, ${why}` : ''})`;
+    const why = body.errors?.[0]?.message;
+    if (why) return `New Relic does not accept this key (HTTP ${res.status}, ${redact(why, value)})`;
+    return `New Relic does not accept this key (HTTP ${res.status})`;
   } catch (e) {
-    return `could not reach New Relic to verify the key: ${(e as Error).message}`;
+    return `could not reach New Relic to verify the key: ${redact((e as Error).message, value)}`;
   }
 }
 
@@ -159,6 +161,6 @@ export function resolveTargets(spec: SecretSpec, repos: string[] | undefined, en
 }
 
 /** The OS keychain holding one registered secret: macOS Keychain, else libsecret. */
-export function keychainFor(spec: SecretSpec, os: string, run: Runner = sh): CredentialStore {
+export function keychainFor(spec: SecretSpec, os: string, run: Runner = sh): KeychainItemStore {
   return os === 'darwin' ? keychainStore(run, spec.service) : libsecretStore(run, spec.service);
 }
