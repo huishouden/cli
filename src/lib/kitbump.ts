@@ -7,6 +7,7 @@ import type { Ctx } from '../registry';
 import { currentPr, currentPrAt, repoAt, type PullRequest, type Repo } from './repo';
 import { compare } from './semver';
 import { sh } from './sh';
+import { commitTrailers, trailerArgs } from './trailers';
 import { kitHasTarball, kitTarballUrl, latestKitTag, memoTagCommit, kitTagSha, type TagCommit } from './kit';
 
 export const PIN = /("@huishouden\/pwa-kit"\s*:\s*")([^"]+)(")/;
@@ -136,6 +137,8 @@ export interface KitSyncDeps {
   tagSha?: TagCommit;
   /** Runs `bun install`; true when it succeeded. */
   install?: (root: string) => boolean;
+  /** The environment HH_COMMIT_TRAILERS is read from (default `process.env`). */
+  env?: Record<string, string | undefined>;
 }
 
 export interface KitSyncResult {
@@ -189,6 +192,13 @@ export function kitSync(repo: Repo, opts: { skip?: boolean; push?: boolean; log:
     log(`! kit ${pin.tag} is behind ${to}, but ${existing.join(', ')} have uncommitted changes; not bumping (hh dev bump-kit)`);
     return { status: 'failed', reason: 'uncommitted changes in package.json, bun.lock or workflows', from: pin.tag, to };
   }
+  let trailers: string[];
+  try {
+    trailers = commitTrailers(repo.root, deps.env);
+  } catch (e) {
+    log(`! kit ${to}: ${(e as Error).message}; not bumping`);
+    return { status: 'failed', reason: 'malformed commit trailer', from: pin.tag, to };
+  }
   const plan = planKitBump(repo.root, to, spec, deps.tagSha ?? memoTagCommit(kitTagSha));
   if (!plan) return { status: 'skipped', reason: 'no pwa-kit pin' };
   if (!plan.ok) {
@@ -204,7 +214,7 @@ export function kitSync(repo: Repo, opts: { skip?: boolean; push?: boolean; log:
   }
   const files = git('status', '--porcelain', '--', ...existing).stdout.split('\n').filter(Boolean).map((l) => l.slice(3));
   git('add', '--', ...files);
-  const c = git('commit', '-q', '-m', `chore: kit ${to}`, '--', ...files);
+  const c = git('commit', '-q', '-m', `chore: kit ${to}`, ...trailerArgs(trailers), '--', ...files);
   if (c.code !== 0) {
     git('reset', '-q', '--', ...files);
     git('checkout', '--', ...existing);

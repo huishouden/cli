@@ -171,6 +171,25 @@ test('kit sync: current, ahead, floating refs, main, --no-bump-kit and no pin', 
   expect(git(a.root, 'log', '--format=%s', '-1')).toBe('feat: app');
 });
 
+test('kit sync: the commit carries hh.commitTrailer and HH_COMMIT_TRAILERS trailers', () => {
+  const { root } = appRepo();
+  git(root, 'config', '--add', 'hh.commitTrailer', 'Co-authored-by: Sam <sam@example.com>');
+  const env = { GIT_CONFIG_GLOBAL: '/dev/null', HH_COMMIT_TRAILERS: 'Claude-Session: https://example.test/session_1\n\nCo-authored-by: Sam <sam@example.com>\n' };
+  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha, env });
+  expect(r.status).toBe('bumped');
+  expect(git(root, 'log', '-1', '--format=%s')).toBe('chore: kit v0.98.0');
+  expect(git(root, 'log', '-1', '--format=%(trailers)')).toBe('Co-authored-by: Sam <sam@example.com>\nClaude-Session: https://example.test/session_1');
+});
+
+test('kit sync: a malformed HH_COMMIT_TRAILERS line refuses the bump and changes nothing', () => {
+  const { root } = appRepo();
+  const head = git(root, 'rev-parse', 'HEAD');
+  const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha, env: { HH_COMMIT_TRAILERS: 'just a sentence' } });
+  expect(r).toMatchObject({ status: 'failed', reason: 'malformed commit trailer' });
+  expect(git(root, 'rev-parse', 'HEAD')).toBe(head);
+  expect(git(root, 'status', '--porcelain')).toBe('');
+});
+
 test('kit sync: a tag whose commit cannot be resolved is not pinned; nothing is left changed', () => {
   const { root } = appRepo();
   const r = kitSync(repoAt(root), { log }, { ...BEHIND, tagSha: () => undefined });
