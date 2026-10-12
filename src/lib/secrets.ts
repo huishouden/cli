@@ -111,7 +111,7 @@ export const SECRETS: SecretSpec[] = [
         if (res.status === 200 && body.success && body.result?.status === 'active') return null;
         return `Cloudflare does not accept this token (HTTP ${res.status}${body.result?.status ? `, ${body.result.status}` : ''})`;
       } catch (e) {
-        return `could not reach Cloudflare to verify the token: ${(e as Error).message}`;
+        return `could not reach Cloudflare to verify the token: ${redact((e as Error).message, value)}`;
       }
     },
     targets: ['portal', 'connector', 'notify', 'calendar'].map((repo) => ({ repo, env: 'production' })),
