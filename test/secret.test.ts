@@ -229,7 +229,7 @@ describe('secret push', () => {
 
 describe('secret where', () => {
   const lists: Record<string, string> = {
-    'portal|': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2030-01-02T03:04:05Z"},{"name":"ALERT_EMAIL","updatedAt":"x"},{"name":"NEW_RELIC_API_KEY","updatedAt":"2030-01-01T00:00:00Z"}]',
+    'portal|': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2030-01-02T03:04:05Z"},{"name":"ALERT_EMAIL","updatedAt":"x"},{"name":"LEGACY_TOKEN","updatedAt":"x"},{"name":"NEW_RELIC_API_KEY","updatedAt":"2030-01-01T00:00:00Z"}]',
     'portal|production': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2030-01-02T03:04:06Z"}]',
     'connector|production': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2030-01-02T03:04:07Z"}]',
     'pet|': '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2026-10-01T00:00:00Z"}]',
@@ -272,15 +272,17 @@ describe('secret where', () => {
     const row = (secret: string, repo: string, env?: string) => d.secrets.find((s) => s.secret === secret && s.repo === repo && s.env === env)!;
     // NEW_RELIC_API_KEY on the portal (repo level) is newrelic-user's expected place.
     expect(row('NEW_RELIC_API_KEY', 'portal')).toMatchObject({ registered: 'newrelic-user', expected: true, keychain: 'keychain' });
-    expect(row('ALERT_EMAIL', 'portal')).toMatchObject({ keychain: 'missing', expected: false });
-    expect(row('ALERT_EMAIL', 'portal').registered).toBeUndefined();
-    expect(d.unregistered).toEqual(['ALERT_EMAIL']);
-    expect(r.text).toMatch(/UNREGISTERED +ALERT_EMAIL .* NO KEYCHAIN COPY/);
+    expect(row('ALERT_EMAIL', 'portal')).toMatchObject({ registered: 'alert-email', expected: true, keychain: 'missing' });
+    expect(row('LEGACY_TOKEN', 'portal')).toMatchObject({ keychain: 'missing', expected: false });
+    expect(row('LEGACY_TOKEN', 'portal').registered).toBeUndefined();
+    expect(d.unregistered).toEqual(['LEGACY_TOKEN']);
+    expect(r.text).toMatch(/UNREGISTERED +LEGACY_TOKEN .* NO KEYCHAIN COPY/);
     expect(r.text).toMatch(/ok +NEW_RELIC_API_KEY +huishouden\/portal .* keychain$/m);
-    expect(d.noKeychainCopy).toEqual(['ALERT_EMAIL', 'CLOUDFLARE_API_TOKEN']);
+    expect(d.noKeychainCopy).toEqual(['ALERT_EMAIL', 'CLOUDFLARE_API_TOKEN', 'LEGACY_TOKEN']);
     // Existence only: never -w, output never captured, one look per service.
     const looks = m.state.calls.filter((c) => c.cmd[0] === 'security');
     expect(looks.map((c) => c.cmd.join(' ')).sort()).toEqual([
+      'security find-generic-password -s huishouden-alert-email -a huishouden',
       'security find-generic-password -s huishouden-cloudflare-api-token -a huishouden',
       'security find-generic-password -s huishouden-newrelic-user-api-key -a huishouden',
     ]);
@@ -288,9 +290,19 @@ describe('secret where', () => {
     expect(JSON.stringify(r)).not.toContain(NR);
   });
 
+  test('alert-email maps ALERT_EMAIL to the portal repo level and takes one address', async () => {
+    const spec = findSecret('alert-email')!;
+    expect(spec).toMatchObject({ service: 'huishouden-alert-email', ghName: 'ALERT_EMAIL', targets: [{ repo: 'portal' }] });
+    expect(spec.targets[0].env).toBeUndefined();
+    expect(spec.rollHint).toContain('hh ops secret store alert-email');
+    expect(spec.validate('alerts@example.com')).toBeNull();
+    expect(spec.validate('not-an-address')).not.toBeNull();
+    expect(spec.validate('a@example.com\nb@example.com')).not.toBeNull();
+  });
+
   test('--strict fails on a keychain gap that otherwise only gets reported', async () => {
     const both = '[{"name":"CLOUDFLARE_API_TOKEN","updatedAt":"2030-01-01T00:00:00Z"},{"name":"CLOUDFLARE_ACCOUNT_ID","updatedAt":"2030-01-01T00:00:00Z"}]';
-    const held: Record<string, string> = { 'portal|': '[{"name":"NEW_RELIC_API_KEY","updatedAt":"2030-01-01T00:00:00Z"},{"name":"VAPID_PRIVATE_KEY","updatedAt":"2030-01-01T00:00:00Z"}]' };
+    const held: Record<string, string> = { 'portal|': '[{"name":"ALERT_EMAIL","updatedAt":"2030-01-01T00:00:00Z"},{"name":"NEW_RELIC_API_KEY","updatedAt":"2030-01-01T00:00:00Z"},{"name":"VAPID_PRIVATE_KEY","updatedAt":"2030-01-01T00:00:00Z"}]' };
     for (const repo of ['portal', 'connector', 'notify', 'calendar']) held[`${repo}|production`] = both;
     const m = machine({ keychain: NR });
     m.deps.arun = async (cmd) => {
@@ -308,14 +320,14 @@ describe('secret where', () => {
     expect(strict.ok).toBe(false);
     m.state.keychain = undefined;
     expect((await whereSecrets(m.deps)).ok).toBe(true);
-    expect(((await whereSecrets(m.deps)).data as { noKeychainCopy: string[] }).noKeychainCopy).toEqual(['CLOUDFLARE_API_TOKEN', 'NEW_RELIC_API_KEY', 'VAPID_PRIVATE_KEY']);
+    expect(((await whereSecrets(m.deps)).data as { noKeychainCopy: string[] }).noKeychainCopy).toEqual(['ALERT_EMAIL', 'CLOUDFLARE_API_TOKEN', 'NEW_RELIC_API_KEY', 'VAPID_PRIVATE_KEY']);
   });
 
   test('Linux: existence by secret-tool lookup with stdout discarded; a keyring that cannot be asked is KEYCHAIN UNKNOWN', async () => {
     const m = org(machine({ keychain: NR, os: 'linux' }));
     await whereSecrets(m.deps);
     const looks = m.state.calls.filter((c) => c.cmd[0] === 'secret-tool');
-    expect(looks.length).toBe(2);
+    expect(looks.length).toBe(3);
     expect(looks.every((c) => c.cmd[1] === 'lookup' && c.discardStdout === true)).toBe(true);
     const locked = org(machine({ keychain: NR, os: 'linux' }));
     locked.state.keyringLocked = true;
