@@ -7,7 +7,7 @@ import type { Ctx } from '../registry';
 import { currentPr, currentPrAt, repoAt, type PullRequest, type Repo } from './repo';
 import { compare } from './semver';
 import { sh } from './sh';
-import { commitTrailers, trailerArgs } from './trailers';
+import { commitTrailers, trailerArgs, TrailerError } from './trailers';
 import { kitHasTarball, kitTarballUrl, latestKitTag, memoTagCommit, kitTagSha, type TagCommit } from './kit';
 
 export const PIN = /("@huishouden\/pwa-kit"\s*:\s*")([^"]+)(")/;
@@ -137,7 +137,7 @@ export interface KitSyncDeps {
   tagSha?: TagCommit;
   /** Runs `bun install`; true when it succeeded. */
   install?: (root: string) => boolean;
-  /** The environment HH_COMMIT_TRAILERS is read from (default `process.env`). */
+  /** The environment of the sync's git calls and where HH_COMMIT_TRAILERS is read (default `process.env`). */
   env?: Record<string, string | undefined>;
 }
 
@@ -159,7 +159,7 @@ const PATHS = ['package.json', 'bun.lock', '.github/workflows'];
  */
 export function kitSync(repo: Repo, opts: { skip?: boolean; push?: boolean; log: (l: string) => void }, deps: KitSyncDeps = {}): KitSyncResult {
   const { log } = opts;
-  const git = (...a: string[]) => sh(['git', ...a], { cwd: repo.root });
+  const git = (...a: string[]) => sh(['git', ...a], { cwd: repo.root, env: deps.env });
   if (opts.skip) return { status: 'skipped', reason: '--no-bump-kit' };
   const pkgPath = join(repo.root, 'package.json');
   const pin = existsSync(pkgPath) ? kitPin(readFileSync(pkgPath, 'utf8')) : null;
@@ -197,7 +197,7 @@ export function kitSync(repo: Repo, opts: { skip?: boolean; push?: boolean; log:
     trailers = commitTrailers(repo.root, deps.env);
   } catch (e) {
     log(`! kit ${to}: ${(e as Error).message}; not bumping`);
-    return { status: 'failed', reason: 'malformed commit trailer', from: pin.tag, to };
+    return { status: 'failed', reason: e instanceof TrailerError ? 'malformed commit trailer' : 'commit trailers unreadable', from: pin.tag, to };
   }
   const plan = planKitBump(repo.root, to, spec, deps.tagSha ?? memoTagCommit(kitTagSha));
   if (!plan) return { status: 'skipped', reason: 'no pwa-kit pin' };

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { commitTrailers, parseTrailers, trailerArgs, TrailerError } from '../src/lib/trailers';
@@ -28,5 +28,13 @@ describe('commit trailers', () => {
     sh(['git', 'config', '--add', 'hh.commitTrailer', 'Claude-Session: https://example.test/1'], { cwd: repo });
     expect(commitTrailers(repo, { ...ISOLATED, HH_COMMIT_TRAILERS: 'Claude-Session: https://example.test/1\nRefs: #12' })).toEqual(['Reviewed-by: Sam <sam@example.com>', 'Claude-Session: https://example.test/1', 'Refs: #12']);
     expect(trailerArgs(['A: 1', 'B: 2'])).toEqual(['--trailer', 'A: 1', '--trailer', 'B: 2']);
+  });
+
+  test('a git config that cannot be read is an error, not "no trailers"', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'hh-trailers-'));
+    sh(['git', 'init', '-q'], { cwd: repo });
+    writeFileSync(join(repo, '.git', 'config'), '[core\nbroken');
+    expect(() => commitTrailers(repo, ISOLATED)).toThrow('could not be read');
+    expect(() => commitTrailers(repo, ISOLATED)).not.toThrow(TrailerError);
   });
 });

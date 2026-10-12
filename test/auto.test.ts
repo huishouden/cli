@@ -174,7 +174,10 @@ test('kit sync: current, ahead, floating refs, main, --no-bump-kit and no pin', 
 test('kit sync: the commit carries hh.commitTrailer and HH_COMMIT_TRAILERS trailers', () => {
   const { root } = appRepo();
   git(root, 'config', '--add', 'hh.commitTrailer', 'Co-authored-by: Sam <sam@example.com>');
-  const env = { GIT_CONFIG_GLOBAL: '/dev/null', HH_COMMIT_TRAILERS: 'Claude-Session: https://example.test/session_1\n\nCo-authored-by: Sam <sam@example.com>\n' };
+  // The commit runs without the machine's ~/.gitconfig: an identity of its own.
+  git(root, 'config', 'user.name', 't');
+  git(root, 'config', 'user.email', 't@example.com');
+  const env = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', HH_COMMIT_TRAILERS: 'Claude-Session: https://example.test/session_1\n\nCo-authored-by: Sam <sam@example.com>\n' };
   const r = kitSync(repoAt(root), { log }, { latest: () => 'v0.98.0', hasTarball: () => false, install: fakeInstall, tagSha, env });
   expect(r.status).toBe('bumped');
   expect(git(root, 'log', '-1', '--format=%s')).toBe('chore: kit v0.98.0');

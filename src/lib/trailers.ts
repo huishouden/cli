@@ -32,10 +32,13 @@ export function parseTrailers(text: string, source: string): string[] {
 
 /**
  * The trailers for a commit hh makes in `cwd`: every `hh.commitTrailer` git config value, then each
- * line of HH_COMMIT_TRAILERS, without repeats. Throws `TrailerError` on a malformed one.
+ * line of HH_COMMIT_TRAILERS, without repeats. Throws `TrailerError` on a malformed one, and an
+Error when git config can't be read.
  */
 export function commitTrailers(cwd: string, env: Record<string, string | undefined> = process.env): string[] {
   const configured = sh(['git', 'config', '--get-all', 'hh.commitTrailer'], { cwd, env });
+  // Exit 1 is "no such key"; anything else (3: a config file git can't parse) is a lookup that failed.
+  if (configured.code !== 0 && configured.code !== 1) throw new Error(`git config hh.commitTrailer could not be read (exit ${configured.code}): ${configured.stderr.trim().slice(0, 200)}`);
   const all = [...(configured.code === 0 ? parseTrailers(configured.stdout, 'git config hh.commitTrailer') : []), ...parseTrailers(env.HH_COMMIT_TRAILERS ?? '', 'HH_COMMIT_TRAILERS')];
   return [...new Set(all)];
 }
