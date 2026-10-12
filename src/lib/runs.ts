@@ -220,8 +220,74 @@ export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult>
   return { steps, shots };
 }
 
-/** The branch on the app's staging site: build, deploy the suite with it, browser tests and screenshots there. */
+/** A Worker repo: a wrangler.toml at the root. */
+export const isWorker = (repo: Pick<Repo, 'root'>): boolean => existsSync(join(repo.root, 'wrangler.toml'));
+
+/**
+ * A Worker's staging environment as its wrangler.toml declares it: whether there is an
+ * `[env.staging]`, and the Firebase project its `[env.staging.vars]` names (if any).
+ */
+export function workerStaging(toml: string): { declared: boolean; project?: string } {
+  const declared = /^\[env\.staging\]\s*$/m.test(toml);
+  const vars = toml.split(/^\[env\.staging\.vars\]\s*$/m)[1]?.split(/^\[/m)[0] ?? '';
+  const project = vars.match(/^FIREBASE_PROJECT_ID\s*=\s*"([^"]*)"/m)?.[1];
+  return { declared, ...(project ? { project } : {}) };
+}
+
+/** The staging Worker's address: the repo's `STAGING_WORKER_URL` variable (public). */
+export function workerStagingUrl(repo: Pick<Repo, 'slug'>): string | undefined {
+  const r = sh(['gh', 'variable', 'list', '-R', repo.slug, '--json', 'name,value']);
+  const vars = r.code === 0 ? (JSON.parse(r.stdout) as { name: string; value: string }[]) : [];
+  return vars.find((v) => v.name === 'STAGING_WORKER_URL')?.value;
+}
+
+/** Refuses a staging address that could be production's: https, and the Worker's name says staging. */
+export function checkWorkerStagingUrl(url: string | undefined, slug: string): string {
+  if (!url) throw new Error(`${slug} has no STAGING_WORKER_URL variable (the staging Worker's address): gh variable set STAGING_WORKER_URL -R ${slug} --body https://<name>-staging.<subdomain>.workers.dev`);
+  let host: string;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') throw new Error('not https');
+    host = u.hostname;
+  } catch {
+    throw new Error(`STAGING_WORKER_URL is not an https address: ${url}`);
+  }
+  if (!/(^|[.-])staging([.-]|$)/.test(host)) throw new Error(`STAGING_WORKER_URL (${host}) does not name a staging Worker; refusing to call it staging`);
+  return url;
+}
+
+/**
+ * A Worker's staging evidence: its checks and tests here, then the branch deployed to the Worker's
+ * `[env.staging]` (against huishouden-staging) with your wrangler login, an HTTP check of the
+ * deployed Worker, and the repo's own `e2e:staging` against it (STAGING_WORKER_URL). Never production.
+ */
+export async function runWorkerStaging(repo: Repo, opts: RunOptions): Promise<RunResult> {
+  const steps = new Steps(opts.log, opts.json);
+  const staging = workerStaging(readFileSync(join(repo.root, 'wrangler.toml'), 'utf8'));
+  if (!staging.declared) throw new Error(`${repo.slug}'s wrangler.toml has no [env.staging]: a Worker's staging evidence deploys there`);
+  if (staging.project && staging.project !== STAGING_PROJECT) throw new Error(`[env.staging.vars] FIREBASE_PROJECT_ID is ${staging.project}, not ${STAGING_PROJECT}`);
+  const url = checkWorkerStagingUrl(workerStagingUrl(repo), repo.slug);
+  await common(repo, steps, {});
+  const deploy = hasScript(repo, 'deploy:staging') ? ['bun', 'run', 'deploy:staging'] : ['bunx', 'wrangler', 'deploy', '--env', 'staging'];
+  await steps.cmd(`deploy the Worker's staging environment (${STAGING_PROJECT})`, deploy, { cwd: repo.root });
+  await steps.run(`HTTP check of ${new URL(url).host}`, async () => {
+    // The deploy is live within seconds; a few tries cover its propagation.
+    let last = '';
+    for (let i = 0; i < 6; i++) {
+      const res = await fetch(url, { redirect: 'manual' }).catch((e: Error) => e);
+      if (!(res instanceof Error) && res.status < 500) return `${res.status}`;
+      last = res instanceof Error ? res.message : `${res.status}`;
+      await Bun.sleep(5000);
+    }
+    throw new Error(`no answer under 500 from ${url}: ${last}`);
+  });
+  if (hasScript(repo, 'e2e:staging')) await steps.cmd('tests against the staging Worker', ['bun', 'run', 'e2e:staging'], { cwd: repo.root, env: { STAGING_WORKER_URL: url } });
+  return { steps, url };
+}
+
+/** The branch on the app's staging site: build, deploy the suite with it, browser tests and screenshots there. A Worker's goes to its staging environment (`runWorkerStaging`). */
 export async function runStaging(repo: Repo, opts: RunOptions): Promise<RunResult> {
+  if (isWorker(repo)) return runWorkerStaging(repo, opts);
   const steps = new Steps(opts.log, opts.json);
   const { env: staged, site, productionApiKey } = stagingEnv(repo);
   const guard = (base: Record<string, string>, log?: (l: string) => void) => guardedEnv(repo.root, base, { kind: 'staging', productionApiKey, log });
