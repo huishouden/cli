@@ -147,7 +147,7 @@ household when you have several. `--staging` uses your staging sign-in.
 | `hh ops deploy-site [--no-watch]` | Dispatches the portal's `ci` with `reconcile: true` and watches it: the portal's deploy is the only one that uploads to the asset CDN, so run this after an app's PR is merged and its deploy has finished. A no-op when the site is current |
 | `hh ops read-alerts [--print] [--project=…] [--hourly=5000] [--daily=30000]` | The Cloud Monitoring alert policies on Firestore's billed reads (pwa-kit STANDARD.md "Read budgets"): over 5,000 in an hour and over 30,000 in 24 hours, emailed on the "Huishouden budget alerts" channel. Runs the kit's `infra/read-alert.sh` from its latest release with your gcloud login; writes only a policy that differs from the live one, and reports each policy as `created`, `updated` or `unchanged` (all unchanged and nothing unrecognised: "unchanged", nothing written; a script line hh doesn't recognise is shown instead, since it may be a write; `--json` has the list). `--print` shows the policies without reading or changing anything |
 | `hh ops staging-cleanup` | Removes staging test households and people over a day old (the kit's `pwa-staging sweep`), with a token from your gcloud login impersonating the staging deploy account (needs Service Account Token Creator on it). `hh dev evidence --staging` runs it after its tests; nothing sweeps staging on a schedule |
-| `hh ops repo-recreate <repo> --archive-name <name> [--apply] [--watch]` | Recreates a public repo with only main and its tags, so its old pull request refs stop serving commits; the old repo becomes a private archive. Dry run unless `--apply`; see below |
+| `hh ops repo-recreate <repo> --archive-name <name> [--apply] [--watch] [--from-step <n> [--backup <dir>]]` | Recreates a public repo with only main and its tags, so its old pull request refs stop serving commits; the old repo becomes a private archive. Dry run unless `--apply`; see below |
 
 ### Recreating a public repository: `hh ops repo-recreate`
 
@@ -210,8 +210,25 @@ changes made and the commands that undo them, newest first.
    else.
 7. Recreate the releases, oldest first, with their names, bodies and assets, and mark the same one
    as latest. If CI has already released a tag, that release is updated to match the recorded one.
+   Assets upload one at a time, each checked by name and size before the next, so the names on
+   GitHub are the recorded ones byte for byte.
 8. Report the CI runs started by the `main` push. With `--watch`, wait for them to finish. A
    failed run is fixed forward; nothing is undone.
+
+**Lagging lists.** GitHub's lists are eventually consistent: a release list read right after the
+releases were created can miss one. Every read-back that lists what a step just wrote (releases,
+release assets, refs, environments, variables, secret names, topics) is repeated after 2, 4, 8
+and 16 seconds, about 30 seconds in all, before a difference is reported. The failure names what
+is missing or differs.
+
+**Resuming.** Each step saves `state.json` in the run's backup directory: the archive id, the new
+repository's id and the steps done. `--from-step <n>` (2 to 8) continues from step `n` without
+undoing, for example `--from-step 7` after a step 7 failure. It runs no preflight (the name now
+belongs to the new repository), uses the newest `<repo>-*` run directory unless `--backup <dir>`
+names one, and refuses when `state.json` is missing, names another repository or archive, or
+does not record steps 1 to `n-1` as done. It verifies that the archive name answers with the
+recorded old id and, from step 4, the repository name with the recorded new id. Without `--apply`
+it only verifies and prints what would run.
 
 The undo commands use `gh api`. A repository is never deleted by name alone: the undo first checks
 that the name answers with the new repository's id.
