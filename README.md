@@ -53,6 +53,16 @@ and the exact workflow refs), pushes it when the branch has an upstream, and pri
 so the PR carries it. `--no-bump-kit` skips it; it never runs on `main` or over uncommitted edits
 to `package.json`, `bun.lock` or the workflows.
 
+Commits hh makes itself carry the trailers you give it, so they match your own (a
+`Claude-Session:` line, a `Co-authored-by:`): every `hh.commitTrailer` git config value, then each
+line of `HH_COMMIT_TRAILERS`, repeats dropped. Each must be `Key: value`; a malformed one stops the
+bump rather than commit without it.
+
+```sh
+git config --global --add hh.commitTrailer 'Co-authored-by: Sam <sam@example.com>'
+HH_COMMIT_TRAILERS='Claude-Session: https://claude.ai/code/session_…' hh dev evidence
+```
+
 `hh dev ready` accepts a review or evidence of an earlier commit (an ancestor) when the diff since
 it touches only the kit: `package.json` changed only in its `@huishouden/pwa-kit` pin (to
 huishouden/pwa-kit's release at an equal or later exact tag), `.github/workflows/*.y(a)ml` changed
