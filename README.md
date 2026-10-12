@@ -227,7 +227,7 @@ undoing, for example `--from-step 7` after a step 7 failure. It runs no prefligh
 belongs to the new repository), uses the newest `<repo>-*` run directory unless `--backup <dir>`
 names one, and refuses when `state.json` is missing, names another repository or archive, or
 does not record steps 1 to `n-1` as done. It verifies that the archive name answers with the
-recorded old id and, from step 4, the repository name with the recorded new id. Without `--apply`
+recorded old id and, whenever a new repository is recorded (from step 3 if its create already happened, always from step 4), the repository name with the recorded new id. A resumed step 3 finishes that repository instead of creating it again; a resumed step 4 updates what exists. Without `--apply`
 it only verifies and prints what would run.
 
 The undo commands use `gh api`. A repository is never deleted by name alone: the undo first checks

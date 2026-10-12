@@ -90,7 +90,7 @@ register({
     '',
     'The list reads that follow a write (releases, release assets, tags and refs, environments, variables, secret names, topics) are re-read at 2, 4, 8 and 16 seconds before a difference is reported, since GitHub\'s lists lag; the failure names what is missing or differs. Release assets upload one at a time, each verified by name and size.',
     '',
-    '--from-step <n> (2 to 8): continue a run that got past step 1 (for example a step 7 failure) without undoing. Every step saves state.json in the run\'s backup directory (the newest <repo>-* run, or --backup <dir>). Resuming reads no preflight: it refuses without that file, or when it names another repo or archive, and verifies that the archive name answers with the recorded old id and (from step 4) the repo name with the recorded new id. Without --apply it only verifies and shows what would run.',
+    '--from-step <n> (2 to 8): continue a run that got past step 1 (for example a step 7 failure) without undoing. Every step saves state.json in the run\'s backup directory (the newest <repo>-* run, or --backup <dir>). Resuming reads no preflight: it refuses without that file, or when it names another repo or archive, and verifies that the archive name answers with the recorded old id and (when a new repository is recorded: from step 3 if its create happened, always from step 4) the repo name with the recorded new id. Without --apply it only verifies and shows what would run.',
     '',
     'Without --apply nothing on GitHub changes (the backup is still written).',
   ].join('\n'),
