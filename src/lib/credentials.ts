@@ -43,6 +43,12 @@ export class CredentialUnreadable extends Error {
 
 export type Runner = (cmd: string[], opts?: ShOptions) => ShResult;
 
+/** An OS keychain store, which can also say whether an item exists without reading its value. */
+export interface KeychainItemStore extends CredentialStore {
+  /** true or false by exit status alone (the value is never asked for, and stdout is discarded); null when the keychain could not be asked. */
+  exists(account: string): boolean | null;
+}
+
 const SERVICE = 'huishouden-hh';
 
 /**
@@ -54,9 +60,14 @@ export function securityAddCommand(service: string, account: string, secret: str
   return `add-generic-password -U -s ${quoted(service)} -a ${quoted(account)} -w ${quoted(secret)}\n`;
 }
 
-export function keychainStore(run: Runner = sh, service = SERVICE): CredentialStore {
+export function keychainStore(run: Runner = sh, service = SERVICE): KeychainItemStore {
   return {
     name: 'macOS Keychain',
+    exists(account) {
+      // Without -w, security prints only the item's attributes; even those are discarded.
+      const r = run(['security', 'find-generic-password', '-s', service, '-a', account], { discardStdout: true });
+      return r.code === 0 ? true : r.code === 44 ? false : null;
+    },
     save(account, secret) {
       if (/[\n\r]/.test(secret)) throw new Error('keychain: the secret has a line break');
       const r = run(['security', '-i'], { input: securityAddCommand(service, account, secret) });
@@ -78,9 +89,18 @@ export function keychainStore(run: Runner = sh, service = SERVICE): CredentialSt
   };
 }
 
-export function libsecretStore(run: Runner = sh, service = SERVICE): CredentialStore {
+export function libsecretStore(run: Runner = sh, service = SERVICE): KeychainItemStore {
   return {
     name: 'libsecret',
+    exists(account) {
+      // `secret-tool search` exits 0 whether or not anything matched, so the answer would be in its
+      // output, which includes the secret. lookup answers by exit status; its stdout (the value) is
+      // discarded, and stderr tells "not there" (silent) from "could not look", as in read.
+      const r = run(['secret-tool', 'lookup', 'service', service, 'account', account], { discardStdout: true });
+      if (r.code === 0) return true;
+      if (r.code === 1 && !r.stderr.trim()) return false;
+      return null;
+    },
     save(account, secret) {
       const r = run(['secret-tool', 'store', '--label=Huishouden hh', 'service', service, 'account', account], { input: secret });
       if (r.code !== 0) throw new Error(`secret-tool: ${r.stderr.trim() || `exited ${r.code}`}`);

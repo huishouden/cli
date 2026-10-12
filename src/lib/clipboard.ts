@@ -20,6 +20,9 @@ export function readClipboard(os: string, env: Record<string, string | undefined
   return r.stdout.trim();
 }
 
+/** Empties the clipboard and reads it back: true when it now holds nothing (xclip and wl-paste exit non-zero on an empty one). */
 export function clearClipboard(os: string, env: Record<string, string | undefined>, run: Runner = sh): boolean {
-  return run(clipboardClearCommand(os, env), { input: '' }).code === 0;
+  if (run(clipboardClearCommand(os, env), { input: '' }).code !== 0) return false;
+  const after = run(clipboardReadCommand(os, env));
+  return after.code !== 0 || after.stdout.trim() === '';
 }

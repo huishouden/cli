@@ -13,6 +13,8 @@ export interface ShOptions {
   input?: string;
   /** Kill the program after this many milliseconds (a failed run, not a hang). */
   timeoutMs?: number;
+  /** Send stdout to /dev/null, so what a program prints there (a secret, say) never enters hh; stderr still comes back. */
+  discardStdout?: boolean;
 }
 
 const mergeEnv = (env?: Record<string, string | undefined>) => {
@@ -26,11 +28,11 @@ export function sh(cmd: string[], opts: ShOptions = {}): ShResult {
     cwd: opts.cwd,
     env: mergeEnv(opts.env),
     stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : 'ignore',
-    stdout: 'pipe',
+    stdout: opts.discardStdout ? 'ignore' : 'pipe',
     stderr: 'pipe',
     ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
   });
-  return { code: p.exitCode ?? 1, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
+  return { code: p.exitCode ?? 1, stdout: p.stdout?.toString() ?? '', stderr: p.stderr?.toString() ?? '' };
 }
 
 /** Throws with the command's stderr when it fails. */

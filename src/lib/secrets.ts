@@ -3,8 +3,10 @@
 // `gh secret set` stdin, inside this process: it is never in argv, never printed, and never read
 // by an agent (the keychain read is hh's own, at push time).
 import type { ConfigFile } from './config';
-import { keychainStore, libsecretStore, type CredentialStore, type Runner } from './credentials';
+import { keychainStore, libsecretStore, type KeychainItemStore, type Runner } from './credentials';
 import { ORG, type Target } from './github-secrets';
+import { nrqConsumer, type LocalConsumer } from './local-consumers';
+import { redact } from './redact';
 import { sh } from './sh';
 
 export { ORG, type Target };
@@ -12,7 +14,10 @@ export { ORG, type Target };
 /** The keychain account every registered secret is filed under. */
 export const KEYCHAIN_ACCOUNT = 'huishouden';
 
-export type Fetcher = (url: string, init?: { headers?: Record<string, string> }) => Promise<{ status: number; json(): Promise<unknown> }>;
+export type Fetcher = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{ status: number; json(): Promise<unknown> }>;
+
+/** The New Relic account Huishouden reports to. */
+export const NEW_RELIC_ACCOUNT_ID = '8578044';
 
 export interface CompanionContext {
   fetcher: Fetcher;
@@ -36,6 +41,8 @@ export interface SecretSpec {
   ghName: string;
   /** What the user does in the provider to get a new value. */
   rollHint: string;
+  /** What happens to the old value once a rotation is verified. */
+  retireHint?: string;
   /** What is wrong with the format, if anything. Messages never contain the value. */
   validate(value: string): string | null;
   /** Asks the provider whether the value works (network); null when it does. */
@@ -44,6 +51,8 @@ export interface SecretSpec {
   targets: Target[];
   /** Other GitHub secrets that travel with it, placed at the same destinations. */
   companions?: Companion[];
+  /** Programs on this machine that use it; store, rotate and sync-local hand them the value. */
+  localConsumers?: LocalConsumer[];
 }
 
 const noBreaks = (v: string) => (/[\r\n]/.test(v) ? 'the value has a line break inside it' : null);
@@ -69,12 +78,31 @@ export async function cloudflareAccountId(value: string, ctx: CompanionContext):
   }
 }
 
+/** A read-only NerdGraph query (`{ actor { user { email } } }`) with the key; null when New Relic answers it. The answer is not printed. */
+export async function verifyNewRelicUserKey(value: string, fetcher: Fetcher): Promise<string | null> {
+  try {
+    const res = await fetcher('https://api.newrelic.com/graphql', {
+      method: 'POST',
+      headers: { 'API-Key': value, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: '{ actor { user { email } } }' }),
+    });
+    const body = (await res.json()) as { data?: { actor?: { user?: { email?: string } } }; errors?: { message?: string }[] };
+    if (res.status === 200 && body.data?.actor?.user?.email && !body.errors?.length) return null;
+    const why = body.errors?.[0]?.message;
+    if (why) return `New Relic does not accept this key (HTTP ${res.status}, ${redact(why, value)})`;
+    return `New Relic does not accept this key (HTTP ${res.status})`;
+  } catch (e) {
+    return `could not reach New Relic to verify the key: ${redact((e as Error).message, value)}`;
+  }
+}
+
 export const SECRETS: SecretSpec[] = [
   {
     name: 'cloudflare',
     service: 'huishouden-cloudflare-api-token',
     ghName: 'CLOUDFLARE_API_TOKEN',
     rollHint: 'Cloudflare dashboard > My Profile > API Tokens > Roll',
+    retireHint: "Revoke nothing: Cloudflare's roll already retired the old token; the next deploy of each target proves the new one.",
     validate: (v) => noBreaks(v) ?? (CLOUDFLARE_TOKEN.test(v) ? null : 'not a Cloudflare user API token (it starts with cfut_ and is 40 characters or more)'),
     async verify(value, fetcher) {
       try {
@@ -83,7 +111,7 @@ export const SECRETS: SecretSpec[] = [
         if (res.status === 200 && body.success && body.result?.status === 'active') return null;
         return `Cloudflare does not accept this token (HTTP ${res.status}${body.result?.status ? `, ${body.result.status}` : ''})`;
       } catch (e) {
-        return `could not reach Cloudflare to verify the token: ${(e as Error).message}`;
+        return `could not reach Cloudflare to verify the token: ${redact((e as Error).message, value)}`;
       }
     },
     targets: ['portal', 'connector', 'notify', 'calendar'].map((repo) => ({ repo, env: 'production' })),
@@ -99,10 +127,13 @@ export const SECRETS: SecretSpec[] = [
     name: 'newrelic-user',
     service: 'huishouden-newrelic-user-api-key',
     ghName: 'NEW_RELIC_API_KEY',
-    rollHint: 'New Relic > API keys > create a new User key (then delete the old one after the push)',
+    rollHint: `one.newrelic.com > your name > API keys > Create a key: account ${NEW_RELIC_ACCOUNT_ID}, Key type User, name huishouden. Delete the old User key once this rotation reports verified`,
     validate: (v) => noBreaks(v) ?? (/^NRAK-[A-Z0-9]{10,}$/.test(v) ? null : 'not a New Relic user key (it starts with NRAK-)'),
+    retireHint: 'Delete the previous User key in New Relic (API keys) now: nothing here uses it any more.',
+    verify: verifyNewRelicUserKey,
     // The monitoring workflow has no environment: the key is a repo secret of the portal.
     targets: [{ repo: 'portal' }],
+    localConsumers: [nrqConsumer(NEW_RELIC_ACCOUNT_ID)],
   },
 ];
 
@@ -130,6 +161,6 @@ export function resolveTargets(spec: SecretSpec, repos: string[] | undefined, en
 }
 
 /** The OS keychain holding one registered secret: macOS Keychain, else libsecret. */
-export function keychainFor(spec: SecretSpec, os: string, run: Runner = sh): CredentialStore {
+export function keychainFor(spec: SecretSpec, os: string, run: Runner = sh): KeychainItemStore {
   return os === 'darwin' ? keychainStore(run, spec.service) : libsecretStore(run, spec.service);
 }
