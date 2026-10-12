@@ -31,6 +31,14 @@ describe("hh ops read-alerts: what read-alert.sh changed", () => {
     expect(parseReadAlertOutput(`  alert up to date: ${HOURLY}`).policies).toEqual([{ policy: HOURLY, change: 'updated' }]);
   });
 
+  test('a line it does not know: never "nothing written"', () => {
+    const o = parseReadAlertOutput(`  unchanged: ${DAILY}\n  unchanged: ${HOURLY}\n  alert replaced: Something new\n`);
+    expect(o.other).toEqual(['alert replaced: Something new']);
+    const text = readAlertSummary('p-1', o);
+    expect(text).not.toContain('nothing written');
+    expect(text).toContain('alert replaced: Something new');
+  });
+
   test('no policy line: says so rather than claiming success', () => {
     expect(readAlertSummary('p-1', parseReadAlertOutput(''))).toContain('reported no policy');
   });

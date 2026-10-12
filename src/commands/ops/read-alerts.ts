@@ -31,6 +31,8 @@ export interface ReadAlertOutcome {
   policies: { policy: string; change: PolicyChange }[];
   /** The email channel's line, as the script said it (created, updated, unchanged, existing used). */
   channel?: string;
+  /** Lines it printed that are none of the above: a kit that reworded or added one. */
+  other: string[];
 }
 
 /**
@@ -40,26 +42,32 @@ export interface ReadAlertOutcome {
  * was a write, so it reads as updated.
  */
 export function parseReadAlertOutput(out: string): ReadAlertOutcome {
-  const outcome: ReadAlertOutcome = { policies: [] };
+  const outcome: ReadAlertOutcome = { policies: [], other: [] };
   for (const raw of out.split('\n')) {
     const line = raw.trim();
     let m: RegExpMatchArray | null;
     if ((m = line.match(/^created the alert: (.+)$/))) outcome.policies.push({ policy: m[1]!, change: 'created' });
     else if ((m = line.match(/^alert (?:updated|up to date): (.+)$/))) outcome.policies.push({ policy: m[1]!, change: 'updated' });
     else if ((m = line.match(/^unchanged: (.+)$/))) outcome.policies.push({ policy: m[1]!, change: 'unchanged' });
-    else if (/email channel|using the existing email channel/.test(line)) outcome.channel = line;
+    else if (/email channel/.test(line)) outcome.channel = line;
+    else if (line) outcome.other.push(line);
   }
   return outcome;
 }
 
-/** One line for the person: "unchanged", or which policy was created or updated. */
+/**
+ * For the person: "unchanged", or which policy was created or updated. Never "nothing written" when
+ * the script printed a line this doesn't know (it may say a write in other words).
+ */
 export function readAlertSummary(project: string, o: ReadAlertOutcome): string {
   if (!o.policies.length) return `read-alert.sh finished on ${project} but reported no policy; check its output above.`;
+  const unknown = o.other.length ? [`read-alert.sh also printed ${o.other.length} line(s) hh doesn't recognise, which may be changes:`, ...o.other.map((l) => `  ${l}`)] : [];
   const changed = o.policies.filter((p) => p.change !== 'unchanged');
-  if (!changed.length) return `Read alerts on ${project}: unchanged (${o.policies.length} policies already as wanted; nothing written).`;
+  if (!changed.length && !unknown.length) return `Read alerts on ${project}: unchanged (${o.policies.length} policies already as wanted; nothing written).`;
+  if (!changed.length) return [`Read alerts on ${project}: ${o.policies.length} policies reported unchanged.`, ...unknown].join('\n');
   const lines = changed.map((p) => `  ${p.change}: ${p.policy}`);
   const same = o.policies.length - changed.length;
-  return [`Read alerts on ${project}: ${changed.length} changed${same ? `, ${same} unchanged` : ''}.`, ...lines].join('\n');
+  return [`Read alerts on ${project}: ${changed.length} changed${same ? `, ${same} unchanged` : ''}.`, ...lines, ...unknown].join('\n');
 }
 
 register({
