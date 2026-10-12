@@ -160,6 +160,17 @@ export function resolveTargets(spec: SecretSpec, repos: string[] | undefined, en
   return { targets, unexpected };
 }
 
+/** The destinations for an exact push: each repo at exactly `env` (undefined: the repo level). */
+export function exactTargets(spec: SecretSpec, repos: string[], env: string | undefined): { targets: Target[]; unexpected: Target[] } {
+  const targets: Target[] = repos.map((repo) => (env === undefined ? { repo } : { repo, env }));
+  return { targets, unexpected: targets.filter((t) => !spec.targets.some((e) => e.repo === t.repo && e.env === t.env)) };
+}
+
+/** The registered secret a GitHub secret name belongs to (its own name or a companion's), if any. */
+export function specForGhName(ghName: string): SecretSpec | undefined {
+  return SECRETS.find((s) => s.ghName === ghName || (s.companions ?? []).some((c) => c.ghName === ghName));
+}
+
 /** The OS keychain holding one registered secret: macOS Keychain, else libsecret. */
 export function keychainFor(spec: SecretSpec, os: string, run: Runner = sh): KeychainItemStore {
   return os === 'darwin' ? keychainStore(run, spec.service) : libsecretStore(run, spec.service);

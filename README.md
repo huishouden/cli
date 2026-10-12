@@ -147,6 +147,88 @@ household when you have several. `--staging` uses your staging sign-in.
 | `hh ops deploy-site [--no-watch]` | Dispatches the portal's `ci` with `reconcile: true` and watches it: the portal's deploy is the only one that uploads to the asset CDN, so run this after an app's PR is merged and its deploy has finished. A no-op when the site is current |
 | `hh ops read-alerts [--print] [--project=…] [--hourly=5000] [--daily=30000]` | The Cloud Monitoring alert policies on Firestore's billed reads (pwa-kit STANDARD.md "Read budgets"): over 5,000 in an hour and over 30,000 in 24 hours, emailed on the "Huishouden budget alerts" channel. Runs the kit's `infra/read-alert.sh` from its latest release with your gcloud login; writes only a policy that differs from the live one, and reports each policy as `created`, `updated` or `unchanged` (all unchanged and nothing unrecognised: "unchanged", nothing written; a script line hh doesn't recognise is shown instead, since it may be a write; `--json` has the list). `--print` shows the policies without reading or changing anything |
 | `hh ops staging-cleanup` | Removes staging test households and people over a day old (the kit's `pwa-staging sweep`), with a token from your gcloud login impersonating the staging deploy account (needs Service Account Token Creator on it). `hh dev evidence --staging` runs it after its tests; nothing sweeps staging on a schedule |
+| `hh ops repo-recreate <repo> --archive-name <name> [--apply] [--watch]` | Recreates a public repo with only main and its tags, so its old pull request refs stop serving commits; the old repo becomes a private archive. Dry run unless `--apply`; see below |
+
+### Recreating a public repository: `hh ops repo-recreate`
+
+GitHub keeps every pull request's head as `refs/pull/<n>/head` on the repository forever, and
+nobody can delete those refs. A public repository whose license changed therefore keeps serving the
+old-license commits through its closed pull requests. `hh ops repo-recreate` removes them from the
+public name. It renames the repository to `--archive-name`, makes the archive private, and creates
+a new public repository at the original name with only `main` and its tags.
+
+```sh
+hh ops repo-recreate kit --archive-name kit-archive-2026           # dry run: preflight, backup, plan; nothing on GitHub changes
+hh ops repo-recreate kit --archive-name kit-archive-2026 --apply --watch
+```
+
+**Preflight.** It only reads, and it finishes before any change. Any failure stops the run with
+nothing changed. It checks the following:
+
+- The repository exists under that name (not through a redirect), is public, is yours to
+  administer, has `main` as its default branch and has no open pull requests.
+- `--archive-name` answers 404. A redirect left by an earlier rename answers 200, and that also
+  stops the run.
+- No commit of `main` has MIT text in `LICENSE`, `LICENSE.md`, `LICENSE.txt`, `LICENCE`,
+  `COPYING` or `package.json`. The search is case-sensitive: `MIT License`,
+  `Permission is hereby granted, free of charge`, or `"license": "MIT"`.
+- Every tag is an ancestor of `main`.
+- Every secret on the repository and its environments is one `hh ops secret push` can push from
+  the keychain: a registered name or a companion. The keychain must also hold an entry for it,
+  checked by exit status only; the value is never read.
+
+It saves a backup to `~/.hh/repo-recreate/<repo>-<time>/` (mode 0700):
+
+- `mirror.git`, a `git clone --mirror` of the repository.
+- `inventory.json`, which records:
+  - settings, topics and merge options;
+  - Actions permissions and workflow permissions;
+  - `security_and_analysis`;
+  - environments, with their branch policies, reviewers and wait timer;
+  - secret names (never values) and variables with their values;
+  - releases and which one is latest;
+  - branch protection, rulesets, webhooks, collaborators and teams.
+- `assets/`, the files attached to each release.
+
+**Apply.** Each step reads its result back. The run stops at the first failure and prints the
+changes made and the commands that undo them, newest first.
+
+1. Rename the repository to the archive name. The archive must answer with the old id, the old
+   name must no longer resolve to its own repository, and the archive's `main` must match the
+   backup.
+2. Make the archive private.
+3. Create the new public repository with the recorded settings and topics, and check that it has
+   a new id. From here on, each step first checks that the name answers with that new id. Until
+   the new repository exists, GitHub redirects the old name to the archive.
+4. Recreate environments with their branch policies, wait timer and reviewers. Then recreate the
+   variables. Then push the secrets with `hh ops secret push`: the value comes from the keychain
+   and goes to `gh secret set` on stdin, and the existing environment is used as it is. Each place
+   is checked by secret name.
+5. Set Actions permissions, workflow permissions, secret scanning and push protection.
+6. Push the tags, then `main`. The tags go first so that CI's tag step finds `HEAD` already
+   tagged. The new repository's refs must then match the backup: `main` and the tags, nothing
+   else.
+7. Recreate the releases, oldest first, with their names, bodies and assets, and mark the same one
+   as latest. If CI has already released a tag, that release is updated to match the recorded one.
+8. Report the CI runs started by the `main` push. With `--watch`, wait for them to finish. A
+   failed run is fixed forward; nothing is undone.
+
+The undo commands use `gh api`. A repository is never deleted by name alone: the undo first checks
+that the name answers with the new repository's id.
+
+Every `gh api` call counts as failed if the exit code is not zero, if gh prints anything on stderr,
+if its output contains an `HTTP 4xx` or `5xx` status, or if the body is an error
+(`message` with `documentation_url`). This applies even when the exit code is 0. Request bodies go
+on stdin, never in the arguments.
+
+**What is kept and what is lost.**
+
+| | |
+|---|---|
+| On the new public repository | `main`'s history; tags; releases and their assets; the latest release; description, homepage and topics; merge settings; environments with branch policies, reviewers and wait timer; variables; secrets (pushed again from the keychain); Actions and workflow permissions; secret scanning and push protection |
+| Only in the private archive | Pull requests with their refs and review threads; issues; branches other than `main`; anything else the old repository held |
+| Lost | Stars, watchers and links from forks, which belong to the archive and are hidden while it is private; the old repository's id |
+| Recorded but not recreated (reapply by hand from `inventory.json`, `notRecreated`) | Branch protection; rulesets; webhooks (GitHub never returns their secrets); direct collaborators and teams |
 
 ## Tests
 

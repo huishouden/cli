@@ -2,47 +2,15 @@
 // GitHub and the programs on this machine that use it, so the keychain is the one source of every
 // value and nobody pastes one into a chat or rolls a token just to move it. The value is never
 // printed, never in argv, and an agent never reads the keychain (only these commands do, in-process).
-import { platform } from 'node:os';
 import { flagString, register, type Ctx, type Result } from '../../registry';
 import { clearClipboard, readClipboard } from '../../lib/clipboard';
-import { configDir } from '../../lib/credentials';
-import { ensureMainOnlyEnvironment, listSecrets, ORG, placements, setSecret, validEnv, validRepo, type RunAsync, type Target } from '../../lib/github-secrets';
-import { has, sh, shAsync, type ShResult, type ShOptions } from '../../lib/sh';
-import { configFile, type ConfigFile } from '../../lib/config';
+import { listSecrets, ORG, placements, type Target } from '../../lib/github-secrets';
+import { fail, keychain, pushSecret, realDeps, type Deps } from '../../lib/secret-push';
 import type { ConsumerContext, ConsumerOutcome } from '../../lib/local-consumers';
 import { redact } from '../../lib/redact';
-import { describeTarget, keychainFor, KEYCHAIN_ACCOUNT, resolveTargets, SECRETS, specFor, type Fetcher, type SecretSpec } from '../../lib/secrets';
+import { describeTarget, KEYCHAIN_ACCOUNT, SECRETS, specFor, type SecretSpec } from '../../lib/secrets';
 
-/** Everything with a side effect, so tests can stand in for the keychain, the clipboard, gh and the network. */
-export interface Deps {
-  run: (cmd: string[], opts?: ShOptions) => ShResult;
-  /** Whether a program is on PATH (running a missing one throws). */
-  has(program: string): boolean;
-  arun: RunAsync;
-  fetcher: Fetcher;
-  os: string;
-  env: Record<string, string | undefined>;
-  config: ConfigFile;
-  now(): Date;
-  /** Progress the user reads (stderr). */
-  say(line: string): void;
-}
-
-export const realDeps = (): Deps => ({
-  run: sh,
-  has,
-  arun: shAsync,
-  fetcher: (url, init) => fetch(url, init),
-  os: platform(),
-  env: process.env,
-  config: configFile(configDir()),
-  now: () => new Date(),
-  say: (line) => void process.stderr.write(`${line}\n`),
-});
-
-const keychain = (spec: SecretSpec, deps: Deps) => keychainFor(spec, deps.os, deps.run);
-
-const fail = (data: Record<string, unknown>, text: string): Result => ({ ok: false, data: { ...data, error: text }, text });
+export { pushSecret, realDeps, type Deps, type PushOutcome } from '../../lib/secret-push';
 
 /** Validates, asks the provider, and saves to the keychain. Nothing about the clipboard. */
 async function saveValue(spec: SecretSpec, value: string, deps: Deps): Promise<string | null> {
@@ -117,60 +85,6 @@ export async function syncLocal(name: string, deps: Deps = realDeps()): Promise<
   if (!value) return fail({ name }, `${name} is not in the keychain: copy it, then run hh ops secret store ${name}`);
   const local = configureConsumers(spec, value, deps);
   return { ok: local.every((o) => o.ok), data: { name, local }, text: local.map(consumerLine).join('\n') };
-}
-
-export interface PushOutcome extends Target {
-  secret: string;
-  ok: boolean;
-  message?: string;
-}
-
-export async function pushSecret(name: string, opts: { repos?: string[]; env?: string; soft?: boolean; expected?: boolean }, deps: Deps = realDeps()): Promise<Result> {
-  const spec = specFor(name);
-  if ('error' in spec) return fail({ name }, spec.error);
-  if (opts.expected && opts.repos) {
-    const repos = opts.repos.filter((r) => spec.targets.some((t) => t.repo === r));
-    if (!repos.length) return { ok: true, data: { name, pushed: [], skipped: 'not an expected target' }, text: `${name} does not belong on ${opts.repos.join(', ')}: skipped.` };
-    opts = { ...opts, repos };
-  }
-  if (!opts.repos && !spec.targets.length) return fail({ name }, `${name} has no default targets: name them with --repos a,b`);
-  for (const r of opts.repos ?? []) if (!validRepo(r)) return fail({ name }, `not a repository name: ${r}`);
-  if (opts.env !== undefined && !validEnv(opts.env)) return fail({ name }, `not an environment name: ${opts.env}`);
-  let value: string | null;
-  try {
-    value = keychain(spec, deps).read(KEYCHAIN_ACCOUNT);
-  } catch (e) {
-    return fail({ name }, (e as Error).message);
-  }
-  if (!value) {
-    if (opts.soft) return { ok: true, data: { name, pushed: [], skipped: 'not in the keychain' }, text: `${name} is not in the keychain: skipped. Copy it, then hh ops secret store ${name}.` };
-    return fail({ name }, `${name} is not in the keychain: copy it, then run hh ops secret store ${name}`);
-  }
-  const { targets, unexpected } = resolveTargets(spec, opts.repos, opts.env);
-  // Companions are resolved once, before anything is set, so a missing one stops the push cleanly.
-  const companions: { ghName: string; value: string }[] = [];
-  for (const c of spec.companions ?? []) {
-    const v = await c.resolve(value, { fetcher: deps.fetcher, env: deps.env, config: deps.config });
-    if (!v) return fail({ name }, `no value for ${c.ghName}: ${c.missingHint}`);
-    companions.push({ ghName: c.ghName, value: v });
-  }
-  const outcomes: PushOutcome[] = [];
-  for (const t of targets) {
-    try {
-      if (t.env) ensureMainOnlyEnvironment(t.repo, t.env, deps.run);
-    } catch (e) {
-      outcomes.push({ ...t, secret: spec.ghName, ok: false, message: (e as Error).message });
-      continue;
-    }
-    for (const s of [{ ghName: spec.ghName, value }, ...companions]) {
-      const r = setSecret({ repo: t.repo, name: s.ghName, value: s.value, env: t.env }, (cmd, input) => deps.run(cmd, { input }));
-      outcomes.push({ ...t, secret: s.ghName, ok: r.ok, ...(r.ok ? {} : { message: r.message }) });
-    }
-  }
-  const ok = outcomes.every((o) => o.ok);
-  const lines = outcomes.map((o) => `${o.ok ? 'set   ' : 'FAILED'} ${o.secret} on ${describeTarget(o)}${o.message ? `: ${o.message}` : ''}`);
-  const warn = unexpected.map((t) => `Unexpected target: ${describeTarget(t)} is not where ${name} belongs (${spec.targets.map(describeTarget).join(', ') || 'no defaults'}).`);
-  return { ok, data: { name, ok, pushed: outcomes, unexpected }, text: [...lines, ...warn].join('\n') };
 }
 
 export type KeychainCopy = 'keychain' | 'derived' | 'missing' | 'unknown';
