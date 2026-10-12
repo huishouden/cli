@@ -4,7 +4,7 @@
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { flagString, register, type Result } from '../../registry';
-import { apply, loadRun, notRecreatedSummary, planLines, preflight, type RecreateDeps } from '../../lib/repo-recreate';
+import { apply, loadRun, notRecreatedSummary, planLines, planSteps, preflight, type RecreateDeps } from '../../lib/repo-recreate';
 import { keychainFor, KEYCHAIN_ACCOUNT, ORG } from '../../lib/secrets';
 import { sh } from '../../lib/sh';
 import { pushSecret, realDeps as secretDeps } from '../../lib/secret-push';
@@ -64,7 +64,7 @@ async function resume(repo: string, archiveName: string, opts: { apply: boolean;
   if (!loaded.ok) return { ok: false, data: { ...base, error: loaded.error, applied: false }, text: `Cannot resume from step ${opts.fromStep}: ${loaded.error}\nNothing on GitHub was changed.` };
   const { inventory, state } = loaded;
   if (!opts.apply) {
-    const plan = planLines(inventory).filter((l) => /^\d\./.test(l) && Number(l[0]) >= opts.fromStep);
+    const plan = planSteps(inventory).filter((x) => x.step >= opts.fromStep).map((x) => `${x.step}. ${x.text}`);
     return { ok: true, data: { ...base, plan, applied: false, completed: state.completed }, text: [`Steps 1 to ${state.completed} are recorded as done in ${inventory.dir}. Resuming would run:`, ...plan.map((l) => `  ${l}`), '', 'Nothing on GitHub was changed. Run again with --apply to continue; the recorded ids are verified first.'].join('\n') };
   }
   const r = await apply(inventory, deps, { watch: opts.watch, fromStep: opts.fromStep });

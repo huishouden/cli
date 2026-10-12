@@ -345,20 +345,26 @@ export function notRecreatedSummary(inv: Inventory): string {
   return `branch protection ${n.branchProtection ? 'on main' : 'none'}, ${n.rulesets.length} ruleset(s), ${n.webhooks.length} webhook(s), ${n.collaborators.length} direct collaborator(s), ${n.teams.length} team(s)`;
 }
 
-/** The plan, as lines: what apply will do, what is kept, what is lost, what stays by hand. */
-export function planLines(inv: Inventory): string[] {
+/** The numbered steps apply will run, each with its description. */
+export function planSteps(inv: Inventory): { step: number; text: string }[] {
   const secretCount = inv.secrets.repo.length + Object.values(inv.secrets.env).reduce((n, x) => n + x.length, 0);
   const varCount = inv.variables.repo.length + Object.values(inv.variables.env).reduce((n, x) => n + x.length, 0);
-  const n = inv.notRecreated;
   return [
-    `1. Rename ${ORG}/${inv.repo} (id ${inv.id}) to ${ORG}/${inv.archiveName}; verify the archive answers with id ${inv.id} and ${inv.repo} no longer does.`,
-    `2. Make ${ORG}/${inv.archiveName} private; verify.`,
-    `3. Create a new public ${ORG}/${inv.repo} with the recorded settings and ${inv.topics.length} topics; verify (a new id).`,
-    `4. Recreate ${inv.environments.length} environment(s) (${inv.environments.map((e) => e.name).join(', ') || 'none'}) with their branch policies, ${varCount} variable(s), then ${secretCount} secret(s) through hh ops secret push from the keychain; verify by name.`,
-    `5. Actions permissions (${inv.actions.permissions.allowed_actions ?? (inv.actions.permissions.enabled ? 'enabled' : 'disabled')}), workflow permissions (${inv.actions.workflow.default_workflow_permissions ?? '?'}), ${Object.entries(inv.securityAndAnalysis).map(([k, v]) => `${k} ${v.status}`).join(', ') || 'no security settings recorded'}; verify.`,
-    `6. Push ${inv.refs.tags.length} tag(s), then main (${inv.refs.main.slice(0, 12)}); verify the refs match the backup.`,
-    `7. Recreate ${inv.releases.length} release(s) in order with their assets${inv.latestRelease ? `, latest ${inv.latestRelease}` : ''}; verify.`,
-    `8. Report the CI run of the main push (--watch: wait for it).`,
+    { step: 1, text: `Rename ${ORG}/${inv.repo} (id ${inv.id}) to ${ORG}/${inv.archiveName}; verify the archive answers with id ${inv.id} and ${inv.repo} no longer does.` },
+    { step: 2, text: `Make ${ORG}/${inv.archiveName} private; verify.` },
+    { step: 3, text: `Create a new public ${ORG}/${inv.repo} with the recorded settings and ${inv.topics.length} topics; verify (a new id).` },
+    { step: 4, text: `Recreate ${inv.environments.length} environment(s) (${inv.environments.map((e) => e.name).join(', ') || 'none'}) with their branch policies, ${varCount} variable(s), then ${secretCount} secret(s) through hh ops secret push from the keychain; verify by name.` },
+    { step: 5, text: `Actions permissions (${inv.actions.permissions.allowed_actions ?? (inv.actions.permissions.enabled ? 'enabled' : 'disabled')}), workflow permissions (${inv.actions.workflow.default_workflow_permissions ?? '?'}), ${Object.entries(inv.securityAndAnalysis).map(([k, v]) => `${k} ${v.status}`).join(', ') || 'no security settings recorded'}; verify.` },
+    { step: 6, text: `Push ${inv.refs.tags.length} tag(s), then main (${inv.refs.main.slice(0, 12)}); verify the refs match the backup.` },
+    { step: 7, text: `Recreate ${inv.releases.length} release(s) in order with their assets${inv.latestRelease ? `, latest ${inv.latestRelease}` : ''}; verify.` },
+    { step: 8, text: `Report the CI run of the main push (--watch: wait for it).` },
+  ];
+}
+
+/** The plan, as lines: what apply will do, what is kept, what is lost, what stays by hand. */
+export function planLines(inv: Inventory): string[] {
+  return [
+    ...planSteps(inv).map((x) => `${x.step}. ${x.text}`),
     '',
     `Kept: main's history, ${inv.refs.tags.length} tags, releases and assets, settings, topics, environments, variables, secrets, Actions and security settings. The archive keeps everything (private).`,
     `Lost on the public name: ${inv.lost.pullRefs} pull request ref(s) and their review threads, issues (${inv.lost.openIssues} open issues and PRs counted by GitHub), ${inv.lost.stars} star(s), ${inv.lost.watchers} watcher(s), ${inv.lost.forks} fork link(s), branches other than main${inv.lost.otherBranches.length ? ` (${inv.lost.otherBranches.join(', ')})` : ''}.`,
@@ -562,15 +568,22 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
     if (first >= 4) {
       if (!named.ok || named.data.id !== state.newId || named.data.name !== inv.repo) problems.push(`${ORG}/${inv.repo} ${named.ok ? `answers with id ${named.data.id} (${named.data.name})` : `could not be read: ${named.error}`}, the new repository's recorded id is ${state.newId}`);
       result.newId = state.newId;
+    } else if (first === 3 && state.newId) {
+      // Step 3 created the repository and then failed its read-back: it is finished in place, not created again.
+      if (!named.ok || named.data.id !== state.newId || named.data.name !== inv.repo) problems.push(`${ORG}/${inv.repo} ${named.ok ? `answers with id ${named.data.id} (${named.data.name})` : `could not be read: ${named.error}`}, the new repository's recorded id is ${state.newId}`);
+      result.newId = state.newId;
     } else if (named.ok && named.data.id !== inv.id) {
-      problems.push(`${ORG}/${inv.repo} already answers with id ${named.data.id}, which is neither the archive's ${inv.id} through a redirect nor free: resume from step 4 if that is the new repository`);
+      problems.push(`${ORG}/${inv.repo} already answers with id ${named.data.id}, which is neither the archive's ${inv.id} through a redirect nor free, and no new repository is recorded`);
     }
     if (problems.length) {
       steps.length = 0;
       steps.push({ step: first, name: 'resume check', ok: false, detail: problems.join('; ') });
       return result;
     }
-    deps.say(`resuming from step ${first}: the archive is id ${inv.id}${first >= 4 ? `, ${ORG}/${inv.repo} is the new id ${state.newId}` : ''}`);
+    // The file never claims steps that are about to run again.
+    state.completed = Math.min(loaded.state.completed, first - 1);
+    persist();
+    deps.say(`resuming from step ${first}: the archive is id ${inv.id}${result.newId ? `, ${ORG}/${inv.repo} is the new id ${state.newId}` : ''}`);
   } else {
     persist();
   }
@@ -608,13 +621,16 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
       'create the new public repository',
       async () => {
         const st = inv.settings;
-        const created = must(
-          `POST orgs/${ORG}/repos`,
-          ghApi<{ id: number; name: string }>(deps.run, 'POST', `orgs/${ORG}/repos`, { name: inv.repo, visibility: 'public', private: false, description: st.description ?? '', homepage: st.homepage ?? '', has_issues: st.has_issues, has_projects: st.has_projects, has_wiki: st.has_wiki, auto_init: false }),
-        );
-        if (created.id === inv.id || created.name !== inv.repo) throw new StepFailed(`the create answered with id ${created.id} (${created.name})`);
-        result.newId = created.id;
-        persist();
+        // A resumed step 3 finds the repository its earlier run created (its id verified by the resume check).
+        if (!result.newId) {
+          const created = must(
+            `POST orgs/${ORG}/repos`,
+            ghApi<{ id: number; name: string }>(deps.run, 'POST', `orgs/${ORG}/repos`, { name: inv.repo, visibility: 'public', private: false, description: st.description ?? '', homepage: st.homepage ?? '', has_issues: st.has_issues, has_projects: st.has_projects, has_wiki: st.has_wiki, auto_init: false }),
+          );
+          if (created.id === inv.id || created.name !== inv.repo) throw new StepFailed(`the create answered with id ${created.id} (${created.name})`);
+          result.newId = created.id;
+          persist();
+        }
         guard();
         must(`PATCH ${R} settings`, ghApi(deps.run, 'PATCH', R, { ...Object.fromEntries(Object.entries(st).map(([k, v]) => [k, (k === 'description' || k === 'homepage') && v === null ? '' : v])) }));
         must(`PUT ${R}/topics`, ghApi(deps.run, 'PUT', `${R}/topics`, { names: inv.topics }));
@@ -636,7 +652,9 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
         for (const e of inv.environments) {
           const path = `${R}/environments/${enc(e.name)}`;
           must(`PUT ${path}`, ghApi(deps.run, 'PUT', path, { wait_timer: e.wait_timer, prevent_self_review: e.prevent_self_review, reviewers: e.reviewers.length ? e.reviewers.map((r) => ({ type: r.type, id: r.id })) : null, deployment_branch_policy: e.deployment_branch_policy, can_admins_bypass: e.can_admins_bypass }));
-          for (const p of e.branch_policies) must(`POST ${path}/deployment-branch-policies ${p.name}`, ghApi(deps.run, 'POST', `${path}/deployment-branch-policies`, { name: p.name, type: p.type }));
+          // A resumed step 4 finds the policies an earlier run made: add only the missing ones.
+          const havePolicies = e.branch_policies.length ? must(`GET ${path}/deployment-branch-policies`, ghList<{ name: string; type?: string }>(deps.run, `${path}/deployment-branch-policies`, 'branch_policies')) : [];
+          for (const p of e.branch_policies) if (!havePolicies.some((h) => h.name === p.name && (h.type ?? 'branch') === p.type)) must(`POST ${path}/deployment-branch-policies ${p.name}`, ghApi(deps.run, 'POST', `${path}/deployment-branch-policies`, { name: p.name, type: p.type }));
           const want = { ...e, reviewers: e.reviewers.map((r) => ({ type: r.type, id: r.id })) };
           await settle(deps, `environment ${e.name}`, () => {
             const back = must(`GET ${path}`, readEnvironment(deps, inv.repo, e.name));
@@ -646,8 +664,13 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
         }
         const varPlaces: [string, { name: string; value: string }[]][] = [[`${R}/actions/variables`, inv.variables.repo], ...Object.entries(inv.variables.env).map(([env, vs]) => [`${R}/environments/${enc(env)}/variables`, vs] as [string, { name: string; value: string }[]])];
         for (const [path, vars] of varPlaces) {
-          for (const v of vars) must(`POST ${path} ${v.name}`, ghApi(deps.run, 'POST', path, { name: v.name, value: v.value }));
           if (!vars.length) continue;
+          // A resumed step 4 finds the variables an earlier run made: update those, create the rest.
+          const have = must(`GET ${path}`, ghList<{ name: string }>(deps.run, path, 'variables')).map((x) => x.name);
+          for (const v of vars) {
+            if (have.includes(v.name)) must(`PATCH ${path}/${v.name}`, ghApi(deps.run, 'PATCH', `${path}/${enc(v.name)}`, { name: v.name, value: v.value }));
+            else must(`POST ${path} ${v.name}`, ghApi(deps.run, 'POST', path, { name: v.name, value: v.value }));
+          }
           await settle(deps, `variables at ${path}`, () => {
             const back = must(`GET ${path}`, ghList<{ name: string; value: string }>(deps.run, path, 'variables'));
             const missing = vars.filter((v) => !back.some((b) => b.name === v.name && b.value === v.value)).map((v) => v.name);

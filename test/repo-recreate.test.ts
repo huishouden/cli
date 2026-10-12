@@ -252,6 +252,7 @@ function world(opts: Opts = {}) {
     if (method === 'PUT' && rest === 'actions/permissions') return (r.perms = body), ok();
     if (method === 'PUT' && rest === 'actions/permissions/workflow') return (r.workflow = body), ok();
     if (method === 'POST' && rest === 'actions/variables') return r.variables.push(body), ok();
+    if (method === 'PATCH' && rest.startsWith('actions/variables/')) return Object.assign(r.variables.find((v) => v.name === decodeURIComponent(rest.slice(18)))!, body), ok();
     if (env && method === 'PUT' && !env[2]) {
       const rules = [...(body.wait_timer ? [{ type: 'wait_timer', wait_timer: body.wait_timer }] : []), ...(body.deployment_branch_policy ? [{ type: 'branch_policy' }] : [])];
       r.envs.set(decodeURIComponent(env[1]!), { json: { name: decodeURIComponent(env[1]!), protection_rules: rules, deployment_branch_policy: body.deployment_branch_policy, can_admins_bypass: body.can_admins_bypass }, policies: [], secrets: [], variables: [] });
@@ -759,6 +760,55 @@ describe('hh ops repo-recreate: --from-step', () => {
     expect(r.text).toContain('7. Recreate');
     expect(r.text).not.toContain('6. Push');
     expect(w.calls.length).toBe(before);
+  });
+
+  test('a step 3 failure after the create resumes with --from-step 3: the repository is finished in place, not created twice', async () => {
+    const w = world();
+    const real = w.deps.run;
+    let drift = true;
+    w.deps.run = (cmd, o) => {
+      const r = real(cmd, o);
+      if (drift && cmd[4] === 'repos/huishouden/app' && cmd[3] === 'GET' && w.repos.get('app') && w.repos.get('app')!.json.id !== SOURCE_ID && r.code === 0) return ok({ ...JSON.parse(r.stdout), description: 'drifted' });
+      return r;
+    };
+    const first = await run(w, true);
+    const failed = (first.data as any).steps.find((s: any) => !s.ok);
+    expect(failed.step).toBe(3);
+    expect(failed.detail).toContain('settings differ');
+    const dir = (first.data as any).inventoryDir as string;
+    expect(state(dir)).toMatchObject({ completed: 2, newId: (first.data as any).newId });
+    drift = false;
+    w.sleeps.length = 0;
+    const before = w.calls.length;
+    const r = await resume(w, 3);
+    expect(r.ok).toBe(true);
+    expect((r.data as any).steps.map((s: any) => [s.step, s.ok])).toEqual([1, 2, 3, 4, 5, 6, 7, 8].map((n) => [n, true]));
+    expect(w.calls.slice(before).some((c) => c.cmd.includes('orgs/huishouden/repos'))).toBe(false);
+    expect([...w.repos.keys()].sort()).toEqual(['app', 'app-archive']);
+  });
+
+  test('a resumed step that fails again lowers completed, so a later --from-step cannot skip it', async () => {
+    const { w, dir } = await failedAtSeven();
+    w.lag.releases = 0;
+    w.lag.secrets = Infinity;
+    const again = await resume(w, 4);
+    expect(again.ok).toBe(false);
+    expect((again.data as any).steps.find((s: any) => !s.ok).step).toBe(4);
+    expect(state(dir).completed).toBe(3);
+    w.lag.secrets = 0;
+    const skip = await resume(w, 7);
+    expect(skip.ok).toBe(false);
+    expect((skip.data as any).error).toContain('only steps 1 to 3 are recorded as done');
+    // Step 4 is safe to run again (variables updated, policies not doubled), and then the rest follows.
+    const fin = await resume(w, 4);
+    expect(fin.ok).toBe(true);
+    expect(w.repos.get('app')!.variables).toEqual([{ name: 'REGION', value: 'eu' }]);
+  });
+
+  test('the dry resume lists steps by number, from the step on', async () => {
+    const { w } = await failedAtSeven();
+    const r = await resume(w, 7, { apply: false });
+    expect((r.data as any).plan.map((l: string) => l.slice(0, 2))).toEqual(['7.', '8.']);
   });
 
   test('refuses when there is no state file, naming it', async () => {
