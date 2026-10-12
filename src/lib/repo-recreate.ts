@@ -7,8 +7,8 @@
 // runs one step at a time, reads every result back, and stops at the first failure with what was
 // done and how to undo it. Every call that addresses the repository by name after the rename first
 // checks the id it answers with, since GitHub redirects a renamed repository's old name to it.
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { ghApi, ghList, GH_ENV, type ApiResult, type Run } from './gh-api';
 import { validRepo } from './github-secrets';
 import { ORG, SECRETS, specForGhName, type SecretSpec } from './secrets';
@@ -427,8 +427,85 @@ export function undoFor(step: number, inv: Inventory, newId?: number): string | 
 
 class StepFailed extends Error {}
 
+/** The waits between reads of a list that lags a write (GitHub's lists are eventually consistent): about 30 seconds in all. */
+export const READ_BACK_DELAYS_MS = [2000, 4000, 8000, 16000];
+
+/**
+ * Read back until `check` finds nothing wrong, waiting between reads with the injected sleep. `check`
+ * returns the problem (what is missing or differs) or null; a read that errors throws and is not
+ * retried. Only when the last read still differs does it fail, with that read's problem.
+ */
+async function settle(deps: RecreateDeps, what: string, check: () => string | null): Promise<void> {
+  let problem = check();
+  for (const delay of READ_BACK_DELAYS_MS) {
+    if (problem === null) return;
+    deps.say(`  ${what}: ${problem}; reading again in ${delay / 1000}s`);
+    await deps.sleep(delay);
+    problem = check();
+  }
+  if (problem !== null) throw new StepFailed(`${problem} (still so after re-reading for ${READ_BACK_DELAYS_MS.reduce((a, b) => a + b, 0) / 1000}s)`);
+}
+
+export const STEP_COUNT = 8;
+export const STATE_FILE = 'state.json';
+
+/** Progress of an apply, saved in the run's backup directory after every step so a failed run can resume. */
+export interface RunState {
+  version: 1;
+  repo: string;
+  archiveName: string;
+  /** The id of the repository that was renamed to the archive. */
+  archiveId: number;
+  /** The id of the new repository, once created. */
+  newId?: number;
+  /** Steps 1..completed all succeeded. */
+  completed: number;
+  steps: StepOutcome[];
+  updatedAt: string;
+}
+
+export const stateFile = (dir: string) => join(dir, STATE_FILE);
+
+function writeState(dir: string, state: RunState) {
+  writeFileSync(stateFile(dir), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+}
+
+/** The newest run directory of the repository under deps.root that has a state file, or undefined. */
+export function latestRun(repo: string, deps: Pick<RecreateDeps, 'root'>): string | undefined {
+  if (!existsSync(deps.root)) return undefined;
+  const dirs = readdirSync(deps.root).filter((d) => d.startsWith(`${repo}-`) && existsSync(stateFile(join(deps.root, d)))).sort();
+  return dirs.length ? join(deps.root, dirs.at(-1)!) : undefined;
+}
+
+/** What --from-step needs: the inventory and state of an earlier run, or why it refuses. */
+export function loadRun(repo: string, archiveName: string, fromStep: number, dir: string | undefined, deps: Pick<RecreateDeps, 'root'>): { ok: true; inventory: Inventory; state: RunState } | { ok: false; error: string } {
+  const fail = (error: string) => ({ ok: false as const, error });
+  if (!Number.isInteger(fromStep) || fromStep < 2 || fromStep > STEP_COUNT) return fail(`--from-step must be a step from 2 to ${STEP_COUNT} (step 1, the rename, has to have happened already), not ${fromStep}`);
+  const at = dir ?? latestRun(repo, deps);
+  if (!at) return fail(`no earlier run of ${repo} with a ${STATE_FILE} under ${deps.root}: --from-step only resumes a run that got past step 1 (name its directory with --backup)`);
+  if (!existsSync(stateFile(at))) return fail(`${stateFile(at)} does not exist: nothing records that step 1 happened, so --from-step refuses`);
+  let state: RunState;
+  let inventory: Inventory;
+  try {
+    state = JSON.parse(readFileSync(stateFile(at), 'utf8'));
+  } catch (e) {
+    return fail(`${stateFile(at)} is unreadable: ${(e as Error).message}`);
+  }
+  try {
+    inventory = JSON.parse(readFileSync(join(at, 'inventory.json'), 'utf8'));
+  } catch (e) {
+    return fail(`${join(at, 'inventory.json')} is unreadable: ${(e as Error).message}`);
+  }
+  if (state.version !== 1 || state.repo !== repo || state.archiveName !== archiveName || inventory.repo !== repo || inventory.archiveName !== archiveName) return fail(`${stateFile(at)} is for ${state.repo ?? '?'} -> ${state.archiveName ?? '?'} (inventory ${inventory.repo} -> ${inventory.archiveName}), not ${repo} -> ${archiveName}`);
+  if (state.archiveId !== inventory.id) return fail(`${stateFile(at)} records archive id ${state.archiveId}, the inventory's repository id is ${inventory.id}`);
+  if (typeof state.completed !== 'number' || state.completed < 1) return fail(`${stateFile(at)} records no completed step 1: --from-step only resumes after the rename`);
+  if (state.completed < fromStep - 1) return fail(`only steps 1 to ${state.completed} are recorded as done, so the run cannot continue from step ${fromStep}: use --from-step ${state.completed + 1}`);
+  if (fromStep >= 4 && !state.newId) return fail(`${stateFile(at)} records no id for the new repository: it cannot resume from step ${fromStep}`);
+  return { ok: true, inventory: { ...inventory, dir: at }, state };
+}
+
 /** Apply the plan. Stops at the first failure; every step reads its result back. */
-export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?: boolean; watchTimeoutMs?: number; runWaitMs?: number } = {}): Promise<ApplyResult> {
+export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?: boolean; watchTimeoutMs?: number; runWaitMs?: number; fromStep?: number } = {}): Promise<ApplyResult> {
   const steps: StepOutcome[] = [];
   const result: ApplyResult = { ok: false, steps, undo: [], changes: [] };
   // Every change made is logged, and marks the running step as having changed something (so its undo applies).
@@ -460,6 +537,43 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
     const g = must(`GET ${R}`, ghApi<{ id: number; name: string }>(deps.run, 'GET', R));
     if (g.id !== result.newId || g.name !== inv.repo) throw new StepFailed(`${ORG}/${inv.repo} answers with id ${g.id} (${g.name}), not the new repository's ${result.newId}: stopped before touching it`);
   };
+
+  const first = opts.fromStep ?? 1;
+  const state: RunState = { version: 1, repo: inv.repo, archiveName: inv.archiveName, archiveId: inv.id, completed: 0, steps: [], updatedAt: deps.now().toISOString() };
+  const persist = () => {
+    state.updatedAt = deps.now().toISOString();
+    state.steps = [...steps];
+    if (result.newId) state.newId = result.newId;
+    writeState(inv.dir, state);
+  };
+  if (first > 1) {
+    // Resuming: the recorded ids must still be what the state file says, or nothing is touched.
+    const loaded = loadRun(inv.repo, inv.archiveName, first, inv.dir, deps);
+    if (!loaded.ok) {
+      steps.push({ step: first, name: 'resume check', ok: false, detail: loaded.error });
+      return result;
+    }
+    Object.assign(state, loaded.state);
+    steps.push(...loaded.state.steps.filter((x) => x.ok && x.step < first));
+    const arch = ghApi<{ id: number; name: string }>(deps.run, 'GET', A);
+    const named = ghApi<{ id: number; name: string }>(deps.run, 'GET', R);
+    const problems: string[] = [];
+    if (!arch.ok || arch.data.id !== inv.id || arch.data.name !== inv.archiveName) problems.push(`${ORG}/${inv.archiveName} ${arch.ok ? `answers with id ${arch.data.id} (${arch.data.name})` : `could not be read: ${arch.error}`}, the archive's recorded id is ${inv.id}`);
+    if (first >= 4) {
+      if (!named.ok || named.data.id !== state.newId || named.data.name !== inv.repo) problems.push(`${ORG}/${inv.repo} ${named.ok ? `answers with id ${named.data.id} (${named.data.name})` : `could not be read: ${named.error}`}, the new repository's recorded id is ${state.newId}`);
+      result.newId = state.newId;
+    } else if (named.ok && named.data.id !== inv.id) {
+      problems.push(`${ORG}/${inv.repo} already answers with id ${named.data.id}, which is neither the archive's ${inv.id} through a redirect nor free: resume from step 4 if that is the new repository`);
+    }
+    if (problems.length) {
+      steps.length = 0;
+      steps.push({ step: first, name: 'resume check', ok: false, detail: problems.join('; ') });
+      return result;
+    }
+    deps.say(`resuming from step ${first}: the archive is id ${inv.id}${first >= 4 ? `, ${ORG}/${inv.repo} is the new id ${state.newId}` : ''}`);
+  } else {
+    persist();
+  }
 
   const stepFns: [string, () => Promise<string>][] = [
     [
@@ -500,15 +614,18 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
         );
         if (created.id === inv.id || created.name !== inv.repo) throw new StepFailed(`the create answered with id ${created.id} (${created.name})`);
         result.newId = created.id;
+        persist();
         guard();
         must(`PATCH ${R} settings`, ghApi(deps.run, 'PATCH', R, { ...Object.fromEntries(Object.entries(st).map(([k, v]) => [k, (k === 'description' || k === 'homepage') && v === null ? '' : v])) }));
         must(`PUT ${R}/topics`, ghApi(deps.run, 'PUT', `${R}/topics`, { names: inv.topics }));
-        const g = must(`GET ${R}`, ghApi<Record<string, any>>(deps.run, 'GET', R));
-        const diff = settingsDiff(st, g);
-        if (g.id !== result.newId || g.private !== false) throw new StepFailed(`${ORG}/${inv.repo} is id ${g.id}, private ${g.private}`);
-        if (diff.length) throw new StepFailed(`settings differ: ${diff.join('; ')}`);
-        const t = must(`GET ${R}/topics`, ghApi<{ names: string[] }>(deps.run, 'GET', `${R}/topics`));
-        if (!same([...t.names].sort(), [...inv.topics].sort())) throw new StepFailed(`topics are ${t.names.join(', ')}, want ${inv.topics.join(', ')}`);
+        await settle(deps, 'settings and topics', () => {
+          const g = must(`GET ${R}`, ghApi<Record<string, any>>(deps.run, 'GET', R));
+          if (g.id !== result.newId || g.private !== false) throw new StepFailed(`${ORG}/${inv.repo} is id ${g.id}, private ${g.private}`);
+          const diff = settingsDiff(st, g);
+          if (diff.length) return `settings differ: ${diff.join('; ')}`;
+          const t = must(`GET ${R}/topics`, ghApi<{ names: string[] }>(deps.run, 'GET', `${R}/topics`));
+          return same([...t.names].sort(), [...inv.topics].sort()) ? null : `topics are ${t.names.join(', ')}, want ${inv.topics.join(', ')}`;
+        });
         return `${ORG}/${inv.repo} is id ${result.newId}, public, settings and topics as recorded`;
       },
     ],
@@ -520,17 +637,22 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
           const path = `${R}/environments/${enc(e.name)}`;
           must(`PUT ${path}`, ghApi(deps.run, 'PUT', path, { wait_timer: e.wait_timer, prevent_self_review: e.prevent_self_review, reviewers: e.reviewers.length ? e.reviewers.map((r) => ({ type: r.type, id: r.id })) : null, deployment_branch_policy: e.deployment_branch_policy, can_admins_bypass: e.can_admins_bypass }));
           for (const p of e.branch_policies) must(`POST ${path}/deployment-branch-policies ${p.name}`, ghApi(deps.run, 'POST', `${path}/deployment-branch-policies`, { name: p.name, type: p.type }));
-          const back = must(`GET ${path}`, readEnvironment(deps, inv.repo, e.name));
           const want = { ...e, reviewers: e.reviewers.map((r) => ({ type: r.type, id: r.id })) };
-          const got = { ...back, reviewers: back.reviewers.map((r) => ({ type: r.type, id: r.id })) };
-          if (!same(got, want)) throw new StepFailed(`environment ${e.name} reads back as ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+          await settle(deps, `environment ${e.name}`, () => {
+            const back = must(`GET ${path}`, readEnvironment(deps, inv.repo, e.name));
+            const got = { ...back, reviewers: back.reviewers.map((r) => ({ type: r.type, id: r.id })) };
+            return same(got, want) ? null : `environment ${e.name} reads back as ${JSON.stringify(got)}, want ${JSON.stringify(want)}`;
+          });
         }
         const varPlaces: [string, { name: string; value: string }[]][] = [[`${R}/actions/variables`, inv.variables.repo], ...Object.entries(inv.variables.env).map(([env, vs]) => [`${R}/environments/${enc(env)}/variables`, vs] as [string, { name: string; value: string }[]])];
         for (const [path, vars] of varPlaces) {
           for (const v of vars) must(`POST ${path} ${v.name}`, ghApi(deps.run, 'POST', path, { name: v.name, value: v.value }));
           if (!vars.length) continue;
-          const back = must(`GET ${path}`, ghList<{ name: string; value: string }>(deps.run, path, 'variables'));
-          for (const v of vars) if (!back.some((b) => b.name === v.name && b.value === v.value)) throw new StepFailed(`variable ${v.name} at ${path} did not read back`);
+          await settle(deps, `variables at ${path}`, () => {
+            const back = must(`GET ${path}`, ghList<{ name: string; value: string }>(deps.run, path, 'variables'));
+            const missing = vars.filter((v) => !back.some((b) => b.name === v.name && b.value === v.value)).map((v) => v.name);
+            return missing.length ? `variable(s) ${missing.join(', ')} at ${path} did not read back` : null;
+          });
         }
         // Secrets: one push per registered secret and place, through hh ops secret push (keychain -> stdin).
         const places: { env?: string; names: string[] }[] = [{ names: inv.secrets.repo }, ...Object.entries(inv.secrets.env).map(([env, names]) => ({ env, names }))];
@@ -543,9 +665,12 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
             if (!pushed.ok) throw new StepFailed(`hh ops secret push ${spec.name} to ${inv.repo}${place.env ? ` (environment ${place.env})` : ''} failed: ${pushed.text ?? ''}`);
           }
           const path = place.env ? `${R}/environments/${enc(place.env)}/secrets` : `${R}/actions/secrets`;
-          const back = must(`GET ${path}`, ghList<{ name: string }>(deps.run, path, 'secrets')).map((x) => x.name);
-          const missing = place.names.filter((n) => !back.includes(n));
-          if (missing.length) throw new StepFailed(`secrets missing at ${path}: ${missing.join(', ')}`);
+          let back: string[] = [];
+          await settle(deps, `secrets at ${path}`, () => {
+            back = must(`GET ${path}`, ghList<{ name: string }>(deps.run, path, 'secrets')).map((x) => x.name);
+            const missing = place.names.filter((n) => !back.includes(n));
+            return missing.length ? `secrets missing at ${path}: ${missing.join(', ')}` : null;
+          });
           extra.push(...back.filter((n) => !place.names.includes(n)).map((n) => `${n}${place.env ? `@${place.env}` : ''}`));
         }
         return `${inv.environments.length} environment(s), ${varPlaces.reduce((n, [, v]) => n + v.length, 0)} variable(s), secrets by name as recorded${extra.length ? ` (also set, as companions: ${extra.join(', ')})` : ''}`;
@@ -590,14 +715,16 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
         };
         if (inv.refs.tags.length) push('refs/tags/*:refs/tags/*');
         push(`${inv.refs.main}:refs/heads/main`);
-        const ls = git(deps, ['ls-remote', url], inv.mirror);
-        if (ls.code !== 0) throw new StepFailed(`git ls-remote: ${ls.stderr.trim()}`);
-        const remote = new Map(ls.stdout.split('\n').filter(Boolean).map((l) => { const [sha, ref] = l.split('\t'); return [ref!, sha!]; }));
-        const heads = [...remote.keys()].filter((r) => r.startsWith('refs/heads/'));
-        if (remote.get('refs/heads/main') !== inv.refs.main || heads.length !== 1) throw new StepFailed(`branches are ${heads.map((h) => `${h}=${remote.get(h)?.slice(0, 12)}`).join(', ')}, want only main=${inv.refs.main.slice(0, 12)}`);
-        const tagRefs = [...remote.keys()].filter((r) => r.startsWith('refs/tags/') && !r.endsWith('^{}'));
-        const wrong = inv.refs.tags.filter((t) => remote.get(t.ref) !== t.sha);
-        if (wrong.length || tagRefs.length !== inv.refs.tags.length) throw new StepFailed(`tags differ from the backup: ${wrong.map((t) => t.ref).join(', ') || `${tagRefs.length} on GitHub, ${inv.refs.tags.length} in the backup`}`);
+        await settle(deps, 'refs', () => {
+          const ls = git(deps, ['ls-remote', url], inv.mirror);
+          if (ls.code !== 0) throw new StepFailed(`git ls-remote: ${ls.stderr.trim()}`);
+          const remote = new Map(ls.stdout.split('\n').filter(Boolean).map((l) => { const [sha, ref] = l.split('\t'); return [ref!, sha!]; }));
+          const heads = [...remote.keys()].filter((r) => r.startsWith('refs/heads/'));
+          if (remote.get('refs/heads/main') !== inv.refs.main || heads.length !== 1) return `branches are ${heads.map((h) => `${h}=${remote.get(h)?.slice(0, 12)}`).join(', ')}, want only main=${inv.refs.main.slice(0, 12)}`;
+          const tagRefs = [...remote.keys()].filter((r) => r.startsWith('refs/tags/') && !r.endsWith('^{}'));
+          const wrong = inv.refs.tags.filter((t) => remote.get(t.ref) !== t.sha);
+          return wrong.length || tagRefs.length !== inv.refs.tags.length ? `tags differ from the backup: ${wrong.map((t) => t.ref).join(', ') || `${tagRefs.length} on GitHub, ${inv.refs.tags.length} in the backup`}` : null;
+        });
         const g = must(`GET ${R}`, ghApi<{ default_branch: string }>(deps.run, 'GET', R));
         if (g.default_branch !== 'main') throw new StepFailed(`default branch is ${g.default_branch}`);
         return `${inv.refs.tags.length} tag(s) and main ${inv.refs.main.slice(0, 12)} match the backup`;
@@ -615,26 +742,47 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
             const existing = must(`GET ${R}/releases/tags/${rel.tag_name}`, ghApi<{ id: number }>(deps.run, 'GET', `${R}/releases/tags/${enc(rel.tag_name)}`));
             made = ghApi<{ id: number }>(deps.run, 'PATCH', `${R}/releases/${existing.id}`, body);
           }
-          must(`release ${rel.tag_name}`, made);
-          if (rel.assets.length) {
-            const up = deps.run(['gh', 'release', 'upload', rel.tag_name, ...rel.assets.map((a) => a.file), '-R', `${ORG}/${inv.repo}`, '--clobber'], { env: GH_ENV });
-            if (up.code !== 0 || up.stderr.trim()) throw new StepFailed(`gh release upload ${rel.tag_name}: ${up.stderr.trim().split('\n')[0] || `exited ${up.code}`}`);
+          const madeRelease = must(`release ${rel.tag_name}`, made);
+          // One upload at a time, each read back before the next: gh uploads several files in parallel, and a
+          // lagging or dropped asset has to be named. Names go to GitHub as the file's own name, byte for byte.
+          for (const a of rel.assets) {
+            if (basename(a.file) !== a.name || a.name.includes('#')) throw new StepFailed(`asset ${rel.tag_name}/${a.name} would upload as a different name (file ${a.file}${a.name.includes('#') ? ', and gh reads # as a label' : ''})`);
+            const onDisk = existsSync(a.file) ? statSync(a.file).size : -1;
+            if (onDisk !== a.size) throw new StepFailed(`asset ${rel.tag_name}/${a.name} is ${onDisk} bytes in the backup, ${a.size} recorded`);
+            const up = deps.run(['gh', 'release', 'upload', rel.tag_name, a.file, '-R', `${ORG}/${inv.repo}`, '--clobber'], { env: GH_ENV });
+            if (up.code !== 0 || up.stderr.trim()) throw new StepFailed(`gh release upload ${rel.tag_name} ${a.name}: ${up.stderr.trim().split('\n')[0] || `exited ${up.code}`}`);
+            await settle(deps, `asset ${rel.tag_name}/${a.name}`, () => {
+              const cur = must(`GET ${R}/releases/${madeRelease.id}`, ghApi<{ assets?: { name: string; size: number }[] }>(deps.run, 'GET', `${R}/releases/${madeRelease.id}`));
+              const named = (cur.assets ?? []).filter((x) => x.name === a.name);
+              if (!named.length) return `asset ${a.name} of release ${rel.tag_name} is not on GitHub (has ${(cur.assets ?? []).map((x) => x.name).join(', ') || 'no assets'})`;
+              return named.some((x) => x.size !== a.size) ? `asset ${a.name} of release ${rel.tag_name} is ${named.map((x) => x.size).join('/')} bytes on GitHub, ${a.size} recorded` : null;
+            });
           }
         }
-        const back = must(`GET ${R}/releases`, ghList<Record<string, any>>(deps.run, `${R}/releases`));
-        if (back.length !== inv.releases.length) throw new StepFailed(`${back.length} release(s) on GitHub, ${inv.releases.length} recorded`);
-        for (const rel of inv.releases) {
-          const b = back.find((x) => x.tag_name === rel.tag_name);
-          if (!b) throw new StepFailed(`release ${rel.tag_name} is missing`);
-          if ((b.name ?? '') !== (rel.name ?? '') || (b.body ?? '') !== (rel.body ?? '') || !!b.prerelease !== rel.prerelease || !!b.draft !== rel.draft) throw new StepFailed(`release ${rel.tag_name} differs in name, body, draft or prerelease`);
-          const got = sorted((b.assets ?? []).map((a: any) => `${a.name}:${a.size}`), (x: string) => x);
-          const want = sorted(rel.assets.map((a) => `${a.name}:${a.size}`), (x) => x);
-          if (!same(got, want)) throw new StepFailed(`release ${rel.tag_name} assets are ${got.join(', ') || 'none'}, want ${want.join(', ')}`);
-        }
-        if (inv.latestRelease) {
-          const l = must(`GET ${R}/releases/latest`, ghApi<{ tag_name: string }>(deps.run, 'GET', `${R}/releases/latest`));
-          if (l.tag_name !== inv.latestRelease) throw new StepFailed(`latest release is ${l.tag_name}, want ${inv.latestRelease}`);
-        }
+        // The list lags the writes: read it again until it matches, then report what is missing or differs.
+        await settle(deps, 'releases', () => {
+          const back = must(`GET ${R}/releases`, ghList<Record<string, any>>(deps.run, `${R}/releases`));
+          const problems: string[] = [];
+          const missing = inv.releases.filter((rel) => !back.some((x) => x.tag_name === rel.tag_name)).map((rel) => rel.tag_name);
+          const extra = back.filter((x) => !inv.releases.some((rel) => rel.tag_name === x.tag_name)).map((x) => x.tag_name);
+          if (back.length !== inv.releases.length) problems.push(`${back.length} release(s) on GitHub, ${inv.releases.length} recorded`);
+          if (missing.length) problems.push(`missing: ${missing.join(', ')}`);
+          if (extra.length) problems.push(`not recorded: ${extra.join(', ')}`);
+          for (const rel of inv.releases) {
+            const b = back.find((x) => x.tag_name === rel.tag_name);
+            if (!b) continue;
+            if ((b.name ?? '') !== (rel.name ?? '') || (b.body ?? '') !== (rel.body ?? '') || !!b.prerelease !== rel.prerelease || !!b.draft !== rel.draft) problems.push(`release ${rel.tag_name} differs in name, body, draft or prerelease`);
+            const got = sorted((b.assets ?? []).map((a: any) => `${a.name}:${a.size}`), (x: string) => x);
+            const want = sorted(rel.assets.map((a) => `${a.name}:${a.size}`), (x) => x);
+            if (!same(got, want)) problems.push(`release ${rel.tag_name} assets are ${got.join(', ') || 'none'}, want ${want.join(', ') || 'none'}`);
+          }
+          if (inv.latestRelease) {
+            const l = ghApi<{ tag_name: string }>(deps.run, 'GET', `${R}/releases/latest`);
+            if (!l.ok && l.status !== 404) throw new StepFailed(`GET ${R}/releases/latest: ${l.error}`);
+            if (!l.ok || l.data.tag_name !== inv.latestRelease) problems.push(`latest release is ${l.ok ? l.data.tag_name : 'not set'}, want ${inv.latestRelease}`);
+          }
+          return problems.length ? problems.join('; ') : null;
+        });
         return `${inv.releases.length} release(s) with their assets${inv.latestRelease ? `, latest ${inv.latestRelease}` : ''}`;
       },
     ],
@@ -669,15 +817,19 @@ export async function apply(inv: Inventory, outer: RecreateDeps, opts: { watch?:
 
   for (const [i, [name, fn]] of stepFns.entries()) {
     const step = i + 1;
+    if (step < first) continue;
     deps.say(`▸ ${step}. ${name}`);
     touched = false;
     try {
       const detail = await fn();
       steps.push({ step, name, ok: true, detail });
+      state.completed = step;
+      persist();
       deps.say(`✓ ${step}. ${detail}`);
     } catch (e) {
       const detail = (e as Error).message;
       steps.push({ step, name, ok: false, detail });
+      persist();
       deps.say(`✗ ${step}. ${detail}`);
       // Undo, newest first: the failed step too when it changed anything (a rename that took, then a check that failed).
       // Step 8 only reads: a failed CI run is fixed forward, never by undoing the recreation.
