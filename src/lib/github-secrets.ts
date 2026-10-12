@@ -81,8 +81,8 @@ export function ensureMainOnlyEnvironment(repo: string, env: string, run: Run = 
   return { created: !exists };
 }
 
-/** Every non-archived repo of the org and the repo-level and environment secrets of the watched names. */
-export async function placements(watched: Set<string>, run: RunAsync = shAsync): Promise<{ held: (Target & Held)[]; unreadable: Target[] }> {
+/** Every non-archived repo of the org and its repo-level and environment secrets: of the watched names, or all of them. */
+export async function placements(watched: Set<string> | undefined, run: RunAsync = shAsync): Promise<{ held: (Target & Held)[]; unreadable: Target[] }> {
   const repos = await run(['gh', 'repo', 'list', ORG, '--no-archived', '--limit', '200', '--json', 'name', '--jq', '.[].name']);
   if (repos.code !== 0) throw new Error(`could not list the ${ORG} repositories: ${repos.stderr.trim().split('\n')[0]}`);
   const held: (Target & Held)[] = [];
@@ -99,7 +99,7 @@ export async function placements(watched: Set<string>, run: RunAsync = shAsync):
           places.map(async (t) => {
             const list = await listSecrets(t.repo, t.env, run);
             if (!list) return void unreadable.push(t);
-            for (const s of list) if (watched.has(s.name)) held.push({ ...t, ...s });
+            for (const s of list) if (!watched || watched.has(s.name)) held.push({ ...t, ...s });
           }),
         );
       }),
