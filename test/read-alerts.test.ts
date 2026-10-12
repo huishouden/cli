@@ -41,6 +41,9 @@ describe("hh ops read-alerts: what read-alert.sh changed", () => {
 
   test('no policy line: says so rather than claiming success', () => {
     expect(readAlertSummary('p-1', parseReadAlertOutput(''))).toContain('reported no policy');
+    const reworded = readAlertSummary('p-1', parseReadAlertOutput('  policy rewritten: Firestore reads over 5000 in an hour\n'));
+    expect(reworded).toContain('reported no policy');
+    expect(reworded).toContain('policy rewritten: Firestore reads over 5000 in an hour');
   });
 });
 

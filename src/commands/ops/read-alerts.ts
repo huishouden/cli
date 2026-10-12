@@ -60,8 +60,8 @@ export function parseReadAlertOutput(out: string): ReadAlertOutcome {
  * the script printed a line this doesn't know (it may say a write in other words).
  */
 export function readAlertSummary(project: string, o: ReadAlertOutcome): string {
-  if (!o.policies.length) return `read-alert.sh finished on ${project} but reported no policy; check its output above.`;
-  const unknown = o.other.length ? [`read-alert.sh also printed ${o.other.length} line(s) hh doesn't recognise, which may be changes:`, ...o.other.map((l) => `  ${l}`)] : [];
+  const unknown = o.other.length ? [`read-alert.sh ${o.policies.length ? 'also ' : ''}printed ${o.other.length} line(s) hh doesn't recognise, which may be changes:`, ...o.other.map((l) => `  ${l}`)] : [];
+  if (!o.policies.length) return [`read-alert.sh finished on ${project} but reported no policy.`, ...unknown].join('\n');
   const changed = o.policies.filter((p) => p.change !== 'unchanged');
   if (!changed.length && !unknown.length) return `Read alerts on ${project}: unchanged (${o.policies.length} policies already as wanted; nothing written).`;
   if (!changed.length) return [`Read alerts on ${project}: ${o.policies.length} policies reported unchanged.`, ...unknown].join('\n');
