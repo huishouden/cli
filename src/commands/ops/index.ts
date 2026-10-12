@@ -9,3 +9,4 @@ import './profile-check';
 import './staging-cleanup';
 import './deploy-site';
 import './read-alerts';
+import './repo-recreate';
