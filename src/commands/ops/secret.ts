@@ -224,8 +224,8 @@ register({
   group: 'ops',
   name: 'secret store',
   summary: 'Validate the copied secret and save it to the OS keychain; clears the clipboard',
-  usage: 'hh ops secret store <name> [--json]  (cloudflare | newrelic-user | any other name)',
-  details: 'Reads the clipboard (pbpaste, wl-paste or xclip). cloudflare: cfut_ prefix, 40+ characters, accepted by Cloudflare\'s token verify API; newrelic-user: NRAK- prefix, accepted by a read-only NerdGraph query; other names: non-empty. Saved with security add-generic-password -U (macOS) or secret-tool (Linux), then the clipboard is cleared and read back, and the local consumers are configured (newrelic-user: nrq; see sync-local). The value is never printed.',
+  usage: 'hh ops secret store <name> [--json]  (cloudflare | newrelic-user | alert-email | any other name)',
+  details: 'Reads the clipboard (pbpaste, wl-paste or xclip). cloudflare: cfut_ prefix, 40+ characters, accepted by Cloudflare\'s token verify API; newrelic-user: NRAK- prefix, accepted by a read-only NerdGraph query; alert-email: one email address (not a credential); other names: non-empty. Saved with security add-generic-password -U (macOS) or secret-tool (Linux), then the clipboard is cleared and read back, and the local consumers are configured (newrelic-user: nrq; see sync-local). The value is never printed.',
   async run(ctx) {
     if (ctx.args.length !== 1) return fail({}, 'usage: hh ops secret store <name>  (copy the value first; it is never taken from argv)');
     return storeSecret(ctx.args[0]);
