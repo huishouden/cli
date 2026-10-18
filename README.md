@@ -113,7 +113,7 @@ not marked as the assistant's: they look as if you made them in the app.
 | `households`, `household home` | Who you are, your households and role; the household's address and time zone |
 | `today`, `calendar [from] [to]`, `todos` | Today's agenda and to-dos; the calendar by day; every open to-do |
 | `todo done <id>`, `todo cancel <id>` | A to-do's Done or Cancel, exactly as the portal does it |
-| `groceries list [list]`, `groceries add <name>`, `groceries check <item>` | Shopping lists |
+| `groceries list [list]`, `groceries add <name> [--need-by YYYY-MM-DD]`, `groceries check <item>`, `groceries update <item> [--need-by YYYY-MM-DD or none]` | Shopping lists; `--need-by` is the day an item is needed by |
 | `tasks add <name>` | A task, with `--due` |
 | `bills due` | Open bills (admins and members) |
 | `pet today [pet]`, `pet feeding <pet>`, `pet dose <pet> <medicine>`, `pet outing <pet> --pooped`, `pet routines [pet]`, `pet routine-done <routine>` | The feeding board, reminders, courses, outings (bathroom breaks, walks) and care routines (`pet routines` lists them, `pet routine-done` marks one done); logging |
