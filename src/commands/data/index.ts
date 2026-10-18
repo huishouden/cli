@@ -26,6 +26,7 @@ export const DATA_COMMANDS: readonly DataCommand[] = [
   { name: 'groceries list', tool: 'groceries_list', positional: ['list'] },
   { name: 'groceries add', tool: 'groceries_add', positional: ['name'] },
   { name: 'groceries check', tool: 'groceries_check', positional: ['item'] },
+  { name: 'groceries update', tool: 'groceries_update', positional: ['item'] },
   { name: 'tasks add', tool: 'tasks_add', positional: ['name'] },
   { name: 'bills due', tool: 'bills_due' },
   { name: 'pet today', tool: 'pet_today', positional: ['pet'] },
