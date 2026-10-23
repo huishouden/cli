@@ -135,14 +135,25 @@ const portFree = (port: number) => {
   }
 };
 
-/** Kits before 0.93.0 fix the emulator ports (8080, 9099): wait for another run on this machine to finish. */
-async function waitForEmulatorPorts(log: (l: string) => void, minutes = 15): Promise<void> {
+/** Waits for fixed emulator ports to be free: another emulator run on this machine may hold them. */
+export async function waitForPorts(ports: number[], log: (l: string) => void, minutes = 15): Promise<void> {
+  const list = ports.join('/');
   for (let waited = 0; ; waited += 10) {
-    if (portFree(8080) && portFree(9099)) return;
-    if (waited % 60 === 0) log(`ports 8080/9099 are in use (another emulator run on this machine); waiting`);
-    if (waited >= minutes * 60) throw new Error(`ports 8080/9099 stayed in use for ${minutes} minutes (another emulator run); rerun when it finishes`);
+    if (ports.every(portFree)) return;
+    if (waited % 60 === 0) log(`ports ${list} are in use (another emulator run on this machine); waiting`);
+    if (waited >= minutes * 60) throw new Error(`ports ${list} stayed in use for ${minutes} minutes (another emulator run); rerun when it finishes`);
     await Bun.sleep(10_000);
   }
+}
+
+/** Kits before 0.93.0 fix the emulator ports (8080, 9099). */
+const waitForEmulatorPorts = (log: (l: string) => void) => waitForPorts([8080, 9099], log);
+
+/** The emulator ports a repo's own firebase.json fixes (the connector's: Firestore 8080, Auth 9099). */
+export function fixedEmulatorPorts(firebaseJson: string): number[] {
+  const emulators = (JSON.parse(firebaseJson) as { emulators?: Record<string, unknown> }).emulators ?? {};
+  const ports = Object.values(emulators).flatMap((e) => (e && typeof e === 'object' && typeof (e as { port?: unknown }).port === 'number' ? [(e as { port: number }).port] : []));
+  return [...new Set(ports)].sort((a, b) => a - b);
 }
 
 /** A free TCP port on 127.0.0.1. */
@@ -208,7 +219,7 @@ async function emulatorTests(repo: Repo, steps: Steps, opts: RunOptions, emulato
   });
 }
 
-/** Build, unit tests, screenshots on a local preview, the emulator tests. */
+/** Build, unit tests, screenshots on a local preview, the emulator tests; a Worker's own end-to-end suite. */
 export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult> {
   const steps = new Steps(opts.log, opts.json);
   // Built against the staging project, so a screenshot's page can never reach real data. Before
@@ -231,11 +242,47 @@ export async function runLocal(repo: Repo, opts: RunOptions): Promise<RunResult>
     }
   } else if (opts.screenshots && !hasScript(repo, 'screenshots')) steps.skip('screenshots', 'no screenshots script');
   if (steps.ok) await emulatorTests(repo, steps, opts, emulatorEnv);
+  await workerE2e(repo, steps, opts, env);
   return { steps, shots };
 }
 
 /** A Worker repo: a wrangler.toml at the root. */
 export const isWorker = (repo: Pick<Repo, 'root'>): boolean => existsSync(join(repo.root, 'wrangler.toml'));
+
+export const WORKER_E2E = 'end-to-end tests (the Worker under wrangler dev, Auth/Firestore emulators)';
+
+export interface WorkerE2eDeps {
+  java: () => ReturnType<typeof useJava>;
+  waitPorts: (ports: number[], log: (l: string) => void) => Promise<void>;
+}
+
+/**
+ * A Worker's own end-to-end suite, its `e2e` script, on this machine (the connector's: the Worker under
+ * `wrangler dev` against the Auth and Firestore emulators, an MCP client signing in and calling every
+ * tool). Java 21+ first; the ports its firebase.json fixes waited for. An app's `e2e` is something
+ * else: smoke tests against a deployed site (`runStaging`).
+ */
+export async function workerE2e(
+  repo: Pick<Repo, 'root' | 'pkg'>,
+  steps: Steps,
+  opts: Pick<RunOptions, 'json' | 'log' | 'emulators'>,
+  env: Record<string, string> = {},
+  deps: WorkerE2eDeps = { java: useJava, waitPorts: waitForPorts },
+): Promise<void> {
+  if (!isWorker(repo) || !repo.pkg.scripts?.e2e) return;
+  if (!opts.emulators) {
+    steps.skip(WORKER_E2E, '--no-emulators');
+    return;
+  }
+  await steps.run(WORKER_E2E, async () => {
+    const java = deps.java();
+    if (!java.ok) throw new Error(java.message);
+    const config = join(repo.root, 'firebase.json');
+    const ports = existsSync(config) ? fixedEmulatorPorts(readFileSync(config, 'utf8')) : [];
+    if (ports.length) await deps.waitPorts(ports, opts.log);
+    return (await stream(['bun', 'run', 'e2e'], { cwd: repo.root, json: opts.json, env })) === 0;
+  });
+}
 
 /**
  * A Worker's staging environment as its wrangler.toml declares it: whether there is an
@@ -283,15 +330,16 @@ export function checkWorkerStagingUrl(url: string | undefined, slug: string): st
 }
 
 /**
- * A Worker's staging evidence: its checks and tests here, then the branch deployed to the Worker's
- * `[env.staging]` (against huishouden-staging) with your wrangler login, an HTTP check of the
- * deployed Worker, and the repo's own `e2e:staging` against it (STAGING_WORKER_URL). Never production.
+ * A Worker's staging evidence: its checks and tests here (its end-to-end suite too), then the branch
+ * deployed to the Worker's `[env.staging]` (against huishouden-staging) with your wrangler login, an
+ * HTTP check of the deployed Worker, and the repo's own `e2e:staging` against it (STAGING_WORKER_URL). Never production.
  */
 export async function runWorkerStaging(repo: Repo, opts: RunOptions): Promise<RunResult> {
   const steps = new Steps(opts.log, opts.json);
   // Every refusal before anything is installed, tested or deployed.
   const url = workerStagingTarget(readFileSync(join(repo.root, 'wrangler.toml'), 'utf8'), workerStagingUrl(repo), repo.slug);
   await common(repo, steps, {});
+  await workerE2e(repo, steps, opts);
   const deploy = hasScript(repo, 'deploy:staging') ? ['bun', 'run', 'deploy:staging'] : ['bunx', 'wrangler', 'deploy', '--env', 'staging'];
   await steps.cmd(`deploy the Worker's staging environment (${STAGING_PROJECT})`, deploy, { cwd: repo.root });
   await steps.run(`HTTP check of ${new URL(url).host}`, async () => {

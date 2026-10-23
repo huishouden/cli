@@ -8,7 +8,7 @@ import { runLocal } from '../../lib/runs';
 register({
   group: 'dev',
   name: 'verify',
-  summary: 'Build, lint, the kit checks, unit tests, screenshots on a local preview, emulator tests',
+  summary: "Build, lint, the kit checks, unit tests, screenshots on a local preview, emulator tests, a Worker's end-to-end suite",
   usage: 'hh dev verify [--no-screenshots] [--no-emulators] [--no-bump-kit] [--json]',
   async run(ctx) {
     const { repo } = syncedRepo(ctx, false);
