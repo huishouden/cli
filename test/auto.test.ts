@@ -444,20 +444,18 @@ test('carry: the kit commit alone is accepted', () => {
   expect(kitOnlyDiff(root, base, head, { tagCommit: TAG })).toMatchObject({ ok: true });
 });
 
-test('carry: any other file, or another change in package.json or a workflow, is refused', () => {
-  const cases: [string, (r: string) => void][] = [
+// Each case builds its own repo, so each is its own test (and its own temporary directory).
+const OTHER_CHANGES: [string, (r: string) => void][] = [
     ['source file', (r) => (writeFileSync(join(r, 'a.ts'), 'x\n'), commitAll(r))],
     ['another dependency', (r) => (writeFileSync(join(r, 'package.json'), readFileSync(join(r, 'package.json'), 'utf8').replace('"dependencies": {', '"dependencies": {\n    "left-pad": "1.0.0",')), commitAll(r))],
     ['package version', (r) => (writeFileSync(join(r, 'package.json'), readFileSync(join(r, 'package.json'), 'utf8').replace('0.0.0', '9.9.9')), commitAll(r))],
     ['workflow body', (r) => (writeFileSync(join(r, '.github/workflows/ci.yml'), readFileSync(join(r, '.github/workflows/ci.yml'), 'utf8') + '  extra: 1\n'), commitAll(r))],
     ['new workflow', (r) => (writeFileSync(join(r, '.github/workflows/new.yml'), CI('v0.98.0')), commitAll(r))],
     ['readme', (r) => (writeFileSync(join(r, 'README.md'), 'hi\n'), commitAll(r))],
-  ];
-  for (const [name, edit] of cases) {
-    dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
-    const { root, base, head } = afterBump(edit);
-    expect([name, kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok]).toEqual([name, false]);
-  }
+];
+test.each(OTHER_CHANGES)('carry: any other file, or another change in package.json or a workflow, is refused (%s)', (_name, edit) => {
+  const { root, base, head } = afterBump(edit);
+  expect(kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok).toBe(false);
 });
 
 test('carry: nothing changed, or a commit that is not an ancestor, is refused', () => {
@@ -466,10 +464,9 @@ test('carry: nothing changed, or a commit that is not an ancestor, is refused', 
   expect(kitOnlyDiff(root, head, base, { tagCommit: TAG }).ok).toBe(false);
 });
 
-test('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock change beyond the kit are refused', () => {
-  const pkg = (r: string, f: (t: string) => string) => (writeFileSync(join(r, 'package.json'), f(readFileSync(join(r, 'package.json'), 'utf8'))), commitAll(r));
-  const wf = (r: string, f: (t: string) => string) => (writeFileSync(join(r, '.github/workflows/ci.yml'), f(readFileSync(join(r, '.github/workflows/ci.yml'), 'utf8'))), commitAll(r));
-  const cases: [string, (r: string) => void][] = [
+const pkg = (r: string, f: (t: string) => string) => (writeFileSync(join(r, 'package.json'), f(readFileSync(join(r, 'package.json'), 'utf8'))), commitAll(r));
+const wf = (r: string, f: (t: string) => string) => (writeFileSync(join(r, '.github/workflows/ci.yml'), f(readFileSync(join(r, '.github/workflows/ci.yml'), 'utf8'))), commitAll(r));
+const BAD_PINS: [string, (r: string) => void][] = [
     ['foreign owner', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'github:someone/pwa-kit#v0.98.0'))],
     ['other host tarball', (r) => pkg(r, (t) => t.replace(/github:huishouden\/pwa-kit#v0\.98\.0/, 'https://evil.example/download/v0.98.0/x.tgz'))],
     ['downgrade', (r) => pkg(r, (t) => t.replace(/#v0\.98\.0/, '#v0.90.0'))],
@@ -479,12 +476,10 @@ test('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock ch
     ['commit pin going back', (r) => wf(r, (t) => t.replace('# v0.98.0', '# v0.90.0'))],
     ['lock beyond kit', (r) => (writeFileSync(join(r, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234').replace('zod@4.0.0', 'zod@4.0.1')), commitAll(r))],
     ['lock kit from elsewhere', (r) => (writeFileSync(join(r, 'bun.lock'), LOCK('github:huishouden/pwa-kit#v0.98.0', 'abc1234').replace('github:huishouden/pwa-kit#abc1234', 'github:evil/pwa-kit#abc1234')), commitAll(r))],
-  ];
-  for (const [name, edit] of cases) {
-    dir = mkdtempSync(join(tmpdir(), 'hh-auto-'));
-    const { root, base, head } = afterBump(edit);
-    expect([name, kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok]).toEqual([name, false]);
-  }
+];
+test.each(BAD_PINS)('carry: a foreign pin, a downgrade, a branch workflow ref and a bun.lock change beyond the kit are refused (%s)', (_name, edit) => {
+  const { root, base, head } = afterBump(edit);
+  expect(kitOnlyDiff(root, base, head, { tagCommit: TAG }).ok).toBe(false);
 });
 
 const V = (status: ReviewVerdict['status'], detail = status): ReviewVerdict => ({ ok: status === 'pass', status, detail });
