@@ -47,7 +47,8 @@ function refMoveOk(before: string, after: string, tagCommit: TagCommit): string 
 }
 
 const LOCK_WORKSPACE = /^([+-])\s*"@huishouden\/pwa-kit": "([^"]+)",?$/;
-const LOCK_ENTRY = /^([+-])\s*"@huishouden\/pwa-kit": \["@huishouden\/pwa-kit@([^"]+)", \{.*\}, "[^"]*"\],?$/;
+// A git dependency's entry ends with its integrity string; a tarball's (a release) has none.
+const LOCK_ENTRY = /^([+-])\s*"@huishouden\/pwa-kit": \["@huishouden\/pwa-kit@([^"]+)", \{.*\}(?:, "[^"]*")?\],?$/;
 
 export interface CarryOptions {
   /** The commit a kit tag points to; defaults to asking GitHub. */
