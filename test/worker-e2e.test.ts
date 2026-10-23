@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixedEmulatorPorts, workerE2e, WORKER_E2E, type WorkerE2eDeps } from '../src/lib/runs';
@@ -40,10 +40,14 @@ const opts = { json: true, log: () => {}, emulators: true };
 
 describe("a Worker's own end-to-end suite in hh dev verify and evidence", () => {
   test("runs the repo's e2e script with Java 21 found and the firebase.json ports free; recorded as a passed step", async () => {
-    const repo = repoWith({ e2e: 'touch ran' });
+    const repo = repoWith({ e2e: 'echo "$JAVA_HOME $PATH" > ran' });
     const { calls, deps, steps } = harness();
     await workerE2e(repo, steps, opts, {}, deps);
-    expect(existsSync(join(repo.root, 'ran'))).toBe(true);
+    // The suite runs with the Java found, first on PATH, not whatever the shell had.
+    const [home, path] = readFileSync(join(repo.root, 'ran'), 'utf8').trim().split(' ');
+    expect(home).toBe('/jdk');
+    // (bun run puts the repo's node_modules/.bin directories first.)
+    expect(path.split(':').filter((p) => !p.endsWith('node_modules/.bin'))[0]).toBe('/jdk/bin');
     expect(calls).toEqual({ java: 1, ports: [[8080, 9099]] });
     expect(steps.records.map((r) => [r.name, r.outcome])).toEqual([[WORKER_E2E, 'pass']]);
     expect(steps.ok).toBe(true);

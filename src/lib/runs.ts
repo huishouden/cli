@@ -280,7 +280,9 @@ export async function workerE2e(
     const config = join(repo.root, 'firebase.json');
     const ports = existsSync(config) ? fixedEmulatorPorts(readFileSync(config, 'utf8')) : [];
     if (ports.length) await deps.waitPorts(ports, opts.log);
-    return (await stream(['bun', 'run', 'e2e'], { cwd: repo.root, json: opts.json, env })) === 0;
+    // The suite's emulators get this Java whatever the shell's is: said here, not left to useJava's process.env.
+    const withJava = { ...env, JAVA_HOME: java.home, PATH: `${join(java.home, 'bin')}:${env.PATH ?? process.env.PATH ?? ''}` };
+    return (await stream(['bun', 'run', 'e2e'], { cwd: repo.root, json: opts.json, env: withJava })) === 0;
   });
 }
 
