@@ -553,6 +553,9 @@ test('carry: the lock must resolve the kit to the release package.json pins', ()
     ['another commit of the repo', setLock(LOCK('github:huishouden/pwa-kit#v0.98.0', 'deadbee')), false],
     ['an older tag tarball', setLock(entry(tarball('v0.90.0'))), false],
     ['the pinned tag tarball', setLock(entry(tarball('v0.98.0'))), true],
+    // As bun writes a tarball's entry: its metadata, and no integrity string after it.
+    ['the pinned tag tarball, as bun writes it', setLock(good.replace('["@huishouden/pwa-kit@github:huishouden/pwa-kit#abc1234", {}, "huishouden-pwa-kit-abc1234"]', `["@huishouden/pwa-kit@${tarball('v0.98.0')}", { "dependencies": { "x": "^1.0.0" }, "bin": { "pwa-site": "./scripts/site.ts" } }]`)), true],
+    ['an older tag tarball, as bun writes it', setLock(good.replace('["@huishouden/pwa-kit@github:huishouden/pwa-kit#abc1234", {}, "huishouden-pwa-kit-abc1234"]', `["@huishouden/pwa-kit@${tarball('v0.90.0')}", { "dependencies": { "x": "^1.0.0" } }]`)), false],
     ['workspace pin differs from package.json', setLock(good.replace('"github:huishouden/pwa-kit#v0.98.0"', '"github:huishouden/pwa-kit#v0.97.0"')), false],
     ['trailing content on the entry line', setLock(good.replace('"huishouden-pwa-kit-abc1234"],', '"huishouden-pwa-kit-abc1234"], "x": 1,')), false],
   ];
